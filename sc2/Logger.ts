@@ -1,14 +1,36 @@
 class Logger {
-    static log(message: string): void {
-        console.log(`[LOG] ${message}`);
+    private comments: string = '';
+
+    addComment(message: string): void {
+        this.comments += `<br>${message}`;
+        console.log(message);
     }
 
-    static error(message: string): void {
-        console.error(`[ERROR] ${message}`);
+    getComments(): string {
+        return this.comments;
     }
 
-    static warn(message: string): void {
-        console.warn(`[WARN] ${message}`);
+    clearComments(): void {
+        this.comments = '';
+    }
+
+    generateReport(): string {
+        return `
+            <html>
+                <head><title>Test Report</title></head>
+                <body>
+                    <h1>Test Execution Logs</h1>
+                    <div>${this.comments}</div>
+                </body>
+            </html>
+        `;
+    }
+
+    saveReportToFile(filePath: string): void {
+        const report = this.generateReport();
+        const fs = require('fs');
+        fs.writeFileSync(filePath, report);
+        console.log(`Report saved to ${filePath}`);
     }
 }
 
