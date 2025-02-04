@@ -318,6 +318,37 @@ class UIManager {
             return [false, null];
         }
     }
+
+    async function setText(page: Page, labelname: string, sValue: string, index?: number, fieldindex?: number, skeys?: string): Promise<[string, Locator]> {
+        let val = '';
+        let guiObject = await process_parent(page, labelname, "Textbox", index, fieldindex);
+        if (!guiObject) {
+            guiObject = await process_parent(page, labelname, "TextArea", index, fieldindex);
+        }
+    
+        guiObject = Array.isArray(guiObject) ? guiObject[0] : guiObject;
+    
+        if (guiObject) {
+            // Очищаем поле ввода
+            await guiObject.fill('');
+            
+            // Вводим текст
+            if (skeys) {
+                await guiObject.type(sValue, { delay: 100 }); // Вводим текст с задержкой
+                await guiObject.press(skeys); // Отправляем специальные клавиши
+            } else {
+                await guiObject.fill(sValue); // Вводим текст
+                await guiObject.press('Enter'); // Отправляем клавишу Enter
+            }
+    
+            console.log("entering text " + sValue);
+            val = sValue;
+        } else {
+            console.log("unable to find text field for label " + labelname);
+        }
+    
+        return [val, guiObject];
+    }
 }
 
 export default UIManager;
