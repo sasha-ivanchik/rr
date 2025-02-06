@@ -4,15 +4,15 @@ class Logger {
     addComment(message: string): void {
         this.comments += `<br>${message}`;
         console.log(message);
-    }
+    };
 
     getComments(): string {
         return this.comments;
-    }
+    };
 
     clearComments(): void {
         this.comments = '';
-    }
+    };
 
     generateReport(): string {
         return `
@@ -24,14 +24,14 @@ class Logger {
                 </body>
             </html>
         `;
-    }
+    };
 
     saveReportToFile(filePath: string): void {
         const report = this.generateReport();
         const fs = require('fs');
         fs.writeFileSync(filePath, report);
         console.log(`Report saved to ${filePath}`);
-    }
+    };
 }
 
 export default Logger;

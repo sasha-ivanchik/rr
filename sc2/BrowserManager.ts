@@ -5,6 +5,8 @@ import { Server } from 'net';
 import { Page, Locator, chromium } from 'playwright';
 import { execSync } from 'child_process';
 import ProcessManager from './ProcessManager';
+import Logger from './Logger';
+
 
 interface AppPortInfo {
     [pid: string]: number; // PID -> порт
@@ -14,17 +16,31 @@ class BrowserManager {
     private gbamDriver: Page | null = null;
     private appDriver: Page | null = null;
     private gbamPort: number | null = null;
-    private comments: string = '';
+    private logger: Logger;
+    private page: Page | null = null;
+
+    constructor(logger: Logger) {
+        this.logger = logger;
+    }
 
     private getOpenFinPath(): string {
         const userHomeDir = homedir();
         return join(userHomeDir, 'AppData', 'Local', 'OpenFin');
-    }
+    };
 
-    private addLog(msg: string): void {
-        this.comments += `<br>${msg}`
-        console.log(msg)
-    }
+    async connect(url: string): Promise<Page | null> {
+        try {
+            const browser = await chromium.launch({headless: false});
+            const context = await browser.newContext();
+            this.page = await context.newPage()
+            await this.page.goto(url, {waitUntil: 'networkidle'});
+            this.logger.addComment(`Conected to ${url}`);
+            return this.page
+        } catch(error) {
+            this.logger.addComment(`Error conecting to ${url} : ${error}`);
+            return null;
+        }
+    };
 
     async launchGBAMDesktop(
         binaryLocation?: string,
@@ -75,16 +91,16 @@ class BrowserManager {
 
             const title = await page.title();
             if (title === 'Global Market Desktop') {
-                this.addLog('Launched GBAM Desktop successfully');
+                this.logger.addComment('Launched GBAM Desktop successfully');
                 return page;
             } else {
-                this.addLog('Failed to launch GBAM Desktop');
+                this.logger.addComment('Failed to launch GBAM Desktop');
             }
         } catch (error) {
-            this.addLog(`Error launching GBAM Desktop:${error}`,);
+            this.logger.addComment(`Error launching GBAM Desktop:${error}`,);
         }
         return null;
-    }
+    };
 
     async switchToApp(appName: string, openfinapp?: Locator): Promise<void> {
         const driver = (appName === "Environment" || appName === "Global Markets Desktop") 
@@ -113,11 +129,11 @@ class BrowserManager {
                         const url = page.url();
 
                         if (title === '' && !url.toLowerCase().includes('blank') && url.toLowerCase().includes('dependent-window.html')) {
-                            this.addLog(`Switched to app window: ${title}`);
+                            this.logger.addComment(`Switched to app window: ${title}`);
                             return;
                         }
                     } catch (error) {
-                        console.error(`Error switching to window: ${error}`);
+                        this.logger.addComment(`Error switching to window: ${error}`);
                     }
                 }
             }
@@ -134,22 +150,20 @@ class BrowserManager {
                     !url.toLowerCase().includes('blank') &&
                     !url.toLowerCase().includes('html') &&
                     !url.toLowerCase().includes('devtools')) {
-                    console.log(`Switched to app window: ${title}`);
-                    this.comments += `<br>Switched to app window: ${title}`;
+                    this.logger.addComment(`Switched to app window: ${title}`);
                     return;
                 }
             } catch (error) {
-                console.error(`Error switching to window: ${error}`);
+                this.logger.addComment(`Error switching to window: ${error}`);
             }
         }
 
         const currentTitle = await driver.title();
         if (!currentTitle.toLowerCase().includes(appName.toLowerCase()) &&
             !appName.toLowerCase().includes(currentTitle.toLowerCase())) {
-            console.log(`Could not switch to app window: ${currentTitle}`);
-            this.comments += `<br>Could not switch to app window: ${currentTitle}`;
+            this.logger.addComment(`Could not switch to app window: ${currentTitle}`);
         }
-    }
+    };
 
     async freePort(): Promise<number> {
         return new Promise((resolve, reject) => {
@@ -203,10 +217,10 @@ class BrowserManager {
                 }
             }
         } catch (error) {
-            console.error('Error finding GBAM app port:', error);
+            this.logger.addComment(`Error finding GBAM app port: ${error}`);
         }
         return { appDict, portValue };
-    }
+    };
 
     async closeGBAMdesktop(): Promise<void> {
         try {
@@ -225,17 +239,14 @@ class BrowserManager {
 
             if (portno) {
                 const result = execSync(`taskkill /fi "pid eq ${portno}"`).toString();
-                console.log('GBAM Desktop closed successfully');
-                this.comments += '<br>GBAM Desktop closed successfully';
+                this.logger.addComment('GBAM Desktop closed successfully');
             } else {
-                console.log('GBAM Desktop closed failed: Process not found');
-                this.comments += '<br>GBAM Desktop closed failed: Process not found';
+                this.logger.addComment('GBAM Desktop closed failed: Process not found');
             }
         } catch (error) {
-            console.error('Error closing GBAM Desktop:', error);
-            this.comments += `<br>Error closing GBAM Desktop: ${error}`;
+            this.logger.addComment(`Error closing GBAM Desktop: ${error}`);
         }
-    }
+    };
 
     async findApplicationPort(): Promise<string[]> {
         const pidList: string[] = [];
@@ -256,20 +267,20 @@ class BrowserManager {
                 }
             }
 
-            this.addLog(`Found application ports: ${pidList.join(', ')}`);
+            this.logger.addComment(`Found application ports: ${pidList.join(', ')}`);
         } catch (error) {
-            this.addLog(`Error finding application ports: ${error}`);
+            this.logger.addComment(`Error finding application ports: ${error}`);
         }
 
         return pidList;
-    }
+    };
 
     async openApp(
         appName: string,
         env: string,
         binaryLocation?: string,
         driverPath?: string,
-        appDriverPath?: string,
+        // appDriverPath?: string,
         appPort?: number,
         showInProduction: boolean = true,
         supportMail?: string,
@@ -282,7 +293,7 @@ class BrowserManager {
             }
 
             if (this.gbamDriver) {
-                this.addLog(`Opening application: ${appName}`);
+                this.logger.addComment(`Opening application: ${appName}`);
                 await this.switchToApp('Global Markets Desktop');
 
                 const searchBar = this.gbamDriver.locator('//input[contains(@class, "SearchBar")]');
@@ -299,7 +310,7 @@ class BrowserManager {
                 const pages = this.gbamDriver.context().pages();
                 const lastPage = pages[pages.length - 1];
                 await lastPage.bringToFront();
-                this.addLog(`Switched to window: ${await lastPage.title()}, URL: ${lastPage.url()}`);
+                this.logger.addComment(`Switched to window: ${await lastPage.title()}, URL: ${lastPage.url()}`);
 
                 const uatIcon = this.gbamDriver.locator(`//*[text()="${env}"]`);
                 await uatIcon.hover();
@@ -322,51 +333,51 @@ class BrowserManager {
                     const title = await page.title();
 
                     if (title === '' || title.includes(appName) || appName.includes(title)) {
-                        this.addLog(`Application "${appName}" opened successfully`);
+                        this.logger.addComment(`Application "${appName}" opened successfully`);
                         return page;
                     }
                 }
 
-                this.addLog(`Application "${appName}" failed to open: Window not found`);
+                this.logger.addComment(`Application "${appName}" failed to open: Window not found`);
                 return null;
             }
         } catch (error) {
-            this.addLog(`Error while opening app from GBAM: ${error}`);
+            this.logger.addComment(`Error while opening app from GBAM: ${error}`);
             throw new Error(`Error while opening app from GBAM: ${error}`);
         }
         return null;
-    }
+    };
 
     async refresh(): Promise<void> {
         try {
             if (this.appDriver) {
                 await this.appDriver.reload();
-                this.addLog('Page refreshed successfully');
+                this.logger.addComment('Page refreshed successfully');
             } else {
-                this.addLog('Failed to refresh: App driver is not initialized');
+                this.logger.addComment('Failed to refresh: App driver is not initialized');
             }
         } catch (error) {
-            this.addLog(`Error refreshing page: ${error}`);
+            this.logger.addComment(`Error refreshing page: ${error}`);
         }
-    }
+    };
 
     async getCurrentWindow(): Promise<string> {
         try {
             if (this.appDriver) {
                 const title = await this.appDriver.title();
-                this.addLog(`Current window title: ${title}`);
+                this.logger.addComment(`Current window title: ${title}`);
                 return title;
             } else {
-                this.addLog('Failed to get current window: App driver is not initialized');
+                this.logger.addComment('Failed to get current window: App driver is not initialized');
                 return '';
             }
         } catch (error) {
-            this.addLog(`Error getting current window title: ${error}`);
+            this.logger.addComment(`Error getting current window title: ${error}`);
             return '';
         }
-    }
+    };
 
-    getUserName(): string {
+    async getUserName(): Promise<string> {
         return require('os').userInfo().username;
     }
 
@@ -374,14 +385,14 @@ class BrowserManager {
         try {
             if (this.appDriver) {
                 await this.appDriver.screenshot({ path: filePath });
-                this.addLog(`Screenshot saved successfully: ${filePath}`);
+                this.logger.addComment(`Screenshot saved successfully: ${filePath}`);
             } else {
-                this.addLog('Failed to save screenshot: App driver is not initialized');
+                this.logger.addComment('Failed to save screenshot: App driver is not initialized');
             }
         } catch (error) {
-            this.addLog(`Error saving screenshot: ${error}`);
+            this.logger.addComment(`Error saving screenshot: ${error}`);
         }
-    }
+    };
 }
 
 export default BrowserManager;

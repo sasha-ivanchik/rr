@@ -1,27 +1,41 @@
 import { Page, Locator } from 'playwright';
-import { Console } from 'console';
+import Logger from './Logger';
+
 
 class GridControls {
-    private page: Page;
     public gobj: Locator | null = null;
     public gtype: string | null = null;
-    public gcolumnlist: { [key: string]: string } | null = null;
+    public gcolumnlist: { [key: string]: string } = {};
     public gridindex: number | null = null;
     public gvllist: any = null;
-    public comments: string = '';
-    private logger: Console;
 
-    constructor(page: Page) {
+    private page: Page | null = null;
+    private logger: Logger;
+    private gridErrorState: boolean = false
+
+    constructor(logger: Logger) {
+        this.logger = logger;
+    };
+
+    setPage(page: Page): void {
         this.page = page;
-        this.logger = new Console(process.stdout, process.stderr);
-    }
+    };
 
-    getSupportedGridTypes(): string[] {
-        this.logger.info("Supported Grid Types: reactgrid, AG Grid, html tables, ant table, webix grid, table, devex");
+    getSupportedGridTypes(): string[] | null {
+        if (!this.page) {
+            this.logger.addComment(`Error call in "getSupportedGridTypes". Page needs to be initialized!`);
+            return null;
+        }
+
+        this.logger.addComment("Supported Grid Types: reactgrid, AG Grid, html tables, ant table, webix grid, table, devex");
         return ['treegrid', 'reactgrid', 'aggrid', 'htmltables', 'anttable', 'webix', 'devex'];
-    }
+    };
 
     async findGrid(gridindex?: string | number, optionalparam?: string): Promise<Locator | null> {
+        if (!this.page) {
+            this.logger.addComment(`Error call in "findGrid". Page needs to be initialized!`);
+            return null;
+        }
         try {
             // Parse grid index
             let parsedGridIndex = 0;
@@ -49,6 +63,11 @@ class GridControls {
             // Find grid elements
             let grdLocator = this.page.locator(gridXpath);
             let gridCount = await grdLocator.count();
+
+            if (parsedGridIndex > gridCount) {
+                this.logger.addComment(`Grid index ${parsedGridIndex} exceeds total grids found (${gridCount})`)
+                throw new Error(`Grid index ${parsedGridIndex} exceeds total grids found (${gridCount})`);
+            }
 
             // Fallback to basic tables if no grids found
             if (gridCount === 0) {
@@ -96,27 +115,43 @@ class GridControls {
             const title = await this.page.title();
             const errorMessage = `Error finding grid. Frame: ${title}, Grid index: ${currentIndex}, Params: ${optionalparam}, Error: ${error}`;
 
-            this.logger.error(errorMessage);
-            this.comments += `<br>${errorMessage}`;
+            this.gridErrorState = true
+            this.logger.addComment(errorMessage);
             this.gobj = null;
             return null;
         }
-    }
+    };
 
-    private async checkGridError(): Promise<void> {
-        if (typeof this.gobj === 'string' && this.gobj.includes('grid error')) {
-            this.logger.info("First identify the grid and then perform grid actions");
-            this.comments += "<br>First identify the grid and then perform grid actions";
-            throw new Error("Grid not identified. Please find the grid first.");
+    private async checkGridError(): Promise<void | null> {
+        if (this.gridErrorState) {
+            this.logger.addComment(`Grid error detected`)
+            throw new Error(`Grid error detected`)
         }
-    }
+        if (!this.page) {
+            this.logger.addComment(`Error call in "checkGridError". Page needs to be initialized!`);
+            return null;
+        }
+    };
 
     async filterGrid(column: string, value: string): Promise<{ gridcell: Locator | null; success: boolean }> {
+        if (!this.page) {
+            this.logger.addComment(`Error call in "filterGrid". Page needs to be initialized!`);
+            return { gridcell: null, success: false };
+        }
+
         await this.checkGridError();
 
         if (!this.gobj) {
             this.gobj = await this.findGrid();
+            if (!this.gobj) {
+                throw new Error("Grid not found.");
+            }
             await this.gobj.click();
+        }
+
+        if (!this.gcolumnlist || !(column in this.gcolumnlist)) {
+            this.logger.addComment(`"${column}" is not in grid`);
+            return { gridcell: null, success: false };
         }
 
         const columndict = this.gcolumnlist;
@@ -135,19 +170,26 @@ class GridControls {
                 await this.page.keyboard.press('Enter');
                 return { gridcell, success: true };
             } else {
-                this.comments += "<br>Expected filters are not available in webix grid";
+                this.logger.addComment("Expected filters are not available in webix grid");
                 return { gridcell: null, success: false };
             }
         }
-
         return { gridcell: null, success: false };
-    }
+    };
 
     async getVisibleRow(): Promise<Locator | null> {
+        if (!this.page) {
+            this.logger.addComment(`Error call in "getVisibleRow". Page needs to be initialized!`);
+            return null;
+        }
+
         await this.checkGridError();
 
         if (!this.gobj) {
             this.gobj = await this.findGrid();
+            if (!this.gobj) {
+                throw new Error("Grid not found.");
+            }
         }
 
         let rowcell: Locator | null = null;
@@ -167,12 +209,11 @@ class GridControls {
                 break;
 
             case 'webix':
-                const rgcell = this.gobj.locator(".//*[contains(@class, 'webic-column')]");
+                const rgcell = this.gobj.locator(".//*[contains(@class, 'webix-column')]");
                 if (await rgcell.count() > 0) {
                     rowcell = rgcell.locator("./child::*[@role='gridcell']");
                 } else {
-                    this.comments += "<br>Expected row cells are not available in webix grid";
-                    this.logger.info("Expected row cells are not available in webix grid");
+                    this.logger.addComment("Expected row cells are not available in webix grid");
                 }
                 break;
 
@@ -194,33 +235,56 @@ class GridControls {
         }
 
         if (rowcell && (await rowcell.count()) > 0) {
-            this.comments += `<br>The visible rows are available in the grid ${this.gtype}`;
+            this.logger.addComment(`The visible rows are available in the grid ${this.gtype}`);
             return rowcell;
         } else {
-            this.comments += `<br>The visible rows are not available in the grid ${this.gtype}`;
+            this.logger.addComment(`The visible rows are not available in the grid ${this.gtype}`);
             return null;
         }
-    }
+    };
 
-    async getVisibleRowCount(): Promise<number> {
+    async getVisibleRowCount(): Promise<number | null> {
+        if (!this.page) {
+            this.logger.addComment(`Error call in "getVisibleRowCount". Page needs to be initialized!`);
+            return null;
+        }
         await this.checkGridError();
         const rowcell = await this.getVisibleRow();
         return rowcell ? await rowcell.count() : 0;
-    }
+    };
 
-    async getColumnCount(): Promise<number> {
+    async getColumnCount(): Promise<number | null> {
+        if (!this.page) {
+            this.logger.addComment(`Error call in "getColumnCount". Page needs to be initialized!`);
+            return null;
+        }
         await this.checkGridError();
+
         if (!this.gobj) {
             this.gobj = await this.findGrid();
+            if (!this.gobj) {
+                throw new Error("Grid not found.");
+            }
+        }
+        if (!this.gcolumnlist) {
+            this.logger.addComment(`Info about columns not found`);
+            return null;
         }
         return Object.keys(this.gcolumnlist).length;
-    }
+    };
 
     async getGridHeaders(): Promise<{ [key: string]: string }> {
+        if (!this.page) {
+            this.logger.addComment(`Error call in "getGridHeaders". Page needs to be initialized!`);
+            return {};
+        }
         await this.checkGridError();
 
         if (!this.gobj) {
             this.gobj = await this.findGrid();
+            if (!this.gobj) {
+                throw new Error("Grid not found.");
+            }
         }
 
         const gcolumnlist: { [key: string]: string } = {};
@@ -254,7 +318,10 @@ class GridControls {
 
             case 'anttable':
                 const gcol = this.gobj.locator(".//thead[@class='ant-table-thead']//tr");
-                const qcolumnhdrs = gcol.locator(".//*[@class='ant-table-column-title']");
+
+                //TODO: check selectors
+                //const qcolumnhdrs = gcol.locator(".//*[@class='ant-table-column-title']");
+                const qcolumnhdrs = gcol.locator(".ant-table-column-title:visible");
                 const hdrCount = await qcolumnhdrs.count();
                 for (let i = 0; i < hdrCount; i++) {
                     const text = await qcolumnhdrs.nth(i).innerText();
@@ -326,17 +393,35 @@ class GridControls {
                     gvllist[text] = i.toString();
                 }
                 break;
+
+            default:
+                throw new Error(`Usupported grid type: ${this.gtype}`)
         }
 
         this.gcolumnlist = gcolumnlist;
         this.gvllist = gvllist;
 
         return gcolumnlist;
-    }
+    };
 
     async getCelldata(row: number, col: string, movetofirst: boolean = true): Promise<[string | null, Locator | null]> {
+        if (!this.page) {
+            this.logger.addComment(`Error call in "getCelldata". Page needs to be initialized!`);
+            return [null, null];
+        }
+
+        if (!this.gcolumnlist) {
+            this.logger.addComment(`Column info not found.`);
+            return [null, null];
+        }
+
         await this.checkGridError();
-        if (!this.gobj) this.gobj = await this.findGrid();
+        if (!this.gobj) {
+            this.gobj = await this.findGrid();
+            if (!this.gobj) {
+                throw new Error("Grid not found.");
+            }
+        }
 
         let celldata: Locator | null = null;
         const scrolcount = 20;
@@ -349,17 +434,17 @@ class GridControls {
                         `.//div[@role='row'][@row-index='${row}'] ` +
                         `//*[@role='gridcell'][@aria-colindex='${colIndex}']`
                     );
-                    
-                    if (!(await celldata.count())) {
-                        const availableCell = this.gobj.locator('.//div[@role="gridcell"]').first();
-                        if (await availableCell.count()) {
-                            const cellRow = await availableCell.getAttribute('row-index');
-                            if (cellRow && parseInt(cellRow) < row) {
-                                await this.page.keyboard.press('PageDown');
-                            } else {
-                                await this.page.keyboard.press('PageUp');
-                            }
-                        }
+                    for (let attempt = 0; attempt < 5; attempt++) {
+                        if (await celldata.count() > 0) break;
+                        await this.page.mouse.wheel(0, 100);
+                        await this.page.waitForTimeout(500);
+                        celldata = this.gobj.locator(
+                            `.//div[@role='row'][@row-index='${row}'] ` +
+                            `//*[@role='gridcell'][@aria-colindex='${colIndex}']`
+                        );
+                    }
+                    if (await celldata.count() > 0) {
+                        await celldata.scrollIntoViewIfNeeded();
                     }
                     break;
 
@@ -369,11 +454,11 @@ class GridControls {
                             `div.webix-ss-body div.webix-ss-center ` +
                             `*[role='gridcell'][aria-rowindex='${row}']`
                         );
-                        
+
                         if (!(await gridRow.count())) {
                             const availableCell = this.gobj.locator('div.webix-ss-center [role="gridcell"]').first();
                             const rowIndex = await availableCell.getAttribute('aria-rowindex');
-                            
+
                             if (rowIndex) {
                                 if (parseInt(rowIndex) < row) {
                                     await this.page.keyboard.press('PageDown');
@@ -418,31 +503,37 @@ class GridControls {
 
             if (celldata && (await celldata.count())) {
                 const text = await celldata.innerText();
-                this.comments += `<br>Cell [${row}, ${col}] found`;
+                this.logger.addComment(`Cell [${row}, ${col}] found`);
                 return [text, celldata];
             }
         } catch (e) {
-            this.logger.error(`Error getting cell: ${e}`);
-            this.comments += `<br>Error finding cell: ${e}`;
+            this.logger.addComment(`Error getting cell: ${e}`);
         }
-
-        this.comments += `<br>Cell [${row}, ${col}] not found`;
+        this.logger.addComment(`Cell [${row}, ${col}] NOT found`);
         return [null, null];
-    }
+    };
 
     async setCelldata(row: number, col: string, value: string, key: string = 'Enter'): Promise<Locator | null> {
+        if (!this.page) {
+            this.logger.addComment(`Error call in "setCelldata". Page needs to be initialized!`);
+            return null;
+        }
         const [_, cell] = await this.getCelldata(row, col, false);
         if (!cell) return null;
 
         await cell.click();
         await this.page.keyboard.press('Control+A');
         await this.page.keyboard.type(value);
+
         if (key) await this.page.keyboard.press(key);
-        
         return cell;
-    }
+    };
 
     async clickCell(row: number, col: string, clickType?: 'double'): Promise<[boolean, Locator | null]> {
+        if (!this.page) {
+            this.logger.addComment(`Error call in "clickCell". Page needs to be initialized!`);
+            return [false, null];
+        }
         const [_, cell] = await this.getCelldata(row, col, false);
         if (!cell) return [false, null];
 
@@ -451,19 +542,27 @@ class GridControls {
         } else {
             await cell.click();
         }
-        
+
         return [true, cell];
-    }
+    };
 
     async verifyGridcelldata(row: number, col: string, expected: string): Promise<[boolean, string | null]> {
+        if (!this.page) {
+            this.logger.addComment(`Error call in "verifyGridcelldata". Page needs to be initialized!`);
+            return [false, null];
+        }
+
+        // ****************************************************
+        // TODO: do we need to normolize `text` and `expected`? ==> use  .trim().toLowerCase()
+
         const [text, _] = await this.getCelldata(row, col);
         if (text === expected) {
-            this.comments += `<br>Cell value matches: ${expected}`;
+            this.logger.addComment(`Cell value matches: ${expected}`);
             return [true, text];
         }
-        this.comments += `<br>Expected ${expected}, got ${text}`;
+        this.logger.addComment(`Expected ${expected}, got ${text}`);
         return [false, text];
-    }
+    };
 }
 
 export default GridControls;
