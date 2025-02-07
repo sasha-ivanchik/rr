@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Webix Grid Example</title>
+    <script src="https://cdn.webix.com/edge/webix.js"></script>
+    <link rel="stylesheet" href="https://cdn.webix.com/edge/webix.css">
+</head>
+<body>
+    <div id="grid_container" style="width: 600px; height: 400px;"></div>
+    <script type="text/javascript">
+        webix.ready(function() {
+            webix.ui({
+                container: "grid_container",
+                view: "datatable",
+                columns: [
+                    { id: "id", header: "ID", width: 50 },
+                    { id: "title", header: "Title", fillspace: true },
+                    { id: "year", header: "Year", width: 100 }
+                ],
+                data: [
+                    { id: 1, title: "The Shawshank Redemption", year: 1994 },
+                    { id: 2, title: "The Godfather", year: 1972 },
+                    { id: 3, title: "The Godfather: Part II", year: 1974 }
+                ]
+            });
+        });
+    </script>
+</body>
+</html>
