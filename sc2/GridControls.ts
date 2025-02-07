@@ -449,34 +449,57 @@ class GridControls {
                     break;
 
                 case 'webix':
+                    // Определяем индекс колонки
+                    const colIndexWebix = this.gcolumnlist[col];
+                    if (colIndexWebix === undefined) {
+                        this.logger.addComment(`Column "${col}" not found in column list.`);
+                        return [null, null];
+                    }
+                
+                    // Локатор для строки
+                    const gridRowWebix = this.gobj.locator(
+                        `div.webix-ss-center [role='gridcell'][aria-rowindex='${row}']`
+                    );
+                
+                    // Локатор для целевой ячейки
+                    const targetCol = this.gobj.locator(
+                        `div.webix-ss-center .webix_column[column='${colIndexWebix}'] ` +
+                        `[role='gridcell'][aria-rowindex='${row}']`
+                    );
+                
+                    // Попытки найти ячейку с учетом скролла
                     for (let i = 0; i < scrolcount; i++) {
-                        const gridRow = this.gobj.locator(
-                            `div.webix-ss-body div.webix-ss-center ` +
-                            `*[role='gridcell'][aria-rowindex='${row}']`
-                        );
-
-                        if (!(await gridRow.count())) {
-                            const availableCell = this.gobj.locator('div.webix-ss-center [role="gridcell"]').first();
-                            const rowIndex = await availableCell.getAttribute('aria-rowindex');
-
-                            if (rowIndex) {
-                                if (parseInt(rowIndex) < row) {
-                                    await this.page.keyboard.press('PageDown');
+                        // Проверяем, есть ли строка в видимой области
+                        if (await gridRowWebix.count()) {
+                            // Если строка найдена, проверяем наличие целевой ячейки
+                            if (await targetCol.count()) {
+                                celldata = targetCol;
+                                break;
+                            }
+                        } else {
+                            // Если строка не найдена, выполняем скролл
+                            const firstVisibleCell = this.gobj.locator('div.webix-ss-center [role="gridcell"]').first();
+                            const firstRowIndex = await firstVisibleCell.getAttribute('aria-rowindex');
+                
+                            if (firstRowIndex) {
+                                const firstRowNum = parseInt(firstRowIndex);
+                                if (firstRowNum < row) {
+                                    await this.page.keyboard.press('PageDown'); // Скролл вниз
                                 } else {
-                                    await this.page.keyboard.press('PageUp');
+                                    await this.page.keyboard.press('PageUp'); // Скролл вверх
                                 }
                             }
                         }
-
-                        const targetCol = this.gobj.locator(
-                            `div.webix-ss-center .webix_column[column='${this.gcolumnlist[col]}'] ` +
-                            `[role='gridcell'][aria-rowindex='${row}']`
-                        );
-
-                        if (await targetCol.count()) {
-                            celldata = targetCol;
-                            break;
-                        }
+                
+                        // Ждем, чтобы дать время на скролл
+                        await this.page.waitForTimeout(500);
+                    }
+                
+                    // Если ячейка найдена, возвращаем её текст и локатор
+                    if (celldata && (await celldata.count())) {
+                        const text = await celldata.innerText();
+                        this.logger.addComment(`Cell [${row}, ${col}] found`);
+                        return [text, celldata];
                     }
                     break;
 
