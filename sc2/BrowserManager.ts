@@ -393,6 +393,83 @@ class BrowserManager {
             this.logger.addComment(`Error saving screenshot: ${error}`);
         }
     };
+
+    public async launchGBAMDesktop2(options: {
+        showInProduction?: boolean;
+        supportMail?: string;
+    } = {}): Promise<Page> {
+        const {
+            showInProduction = true,
+            supportMail = 'dg.ficc_qa_automation_horizontal@bofa.com'
+        } = options;
+
+        try {
+            // Kill existing processes
+            await this.taskKill('openfin.exe');
+            await this.taskKill('chromedriver.exe');
+
+            // Determine installation path
+            const username = os.userInfo().username;
+            const cdrivePath = path.join('C:\\Users', username, 'AppData', 'Local', 'OpenFin');
+            const ddrivePath = 'D:\\Apps\\OpenFin';
+            const userPath = fs.existsSync(ddrivePath) ? ddrivePath : cdrivePath;
+
+            // Get free port for DevTools
+            this.gbamPort = await this.freePort();
+
+            // Prepare application URL
+            const appURL = `http://gbam-ui.bankofamerica.com:55555/tag/GBAM%20Desktop%20Launcher/PROD?devtools_port=${this.gbamPort}`;
+
+            // Create batch script
+            const batchScript = `cmd.exe /K "cd /D "${userPath}" && start OpenFinRVM.exe --config="${appURL}" --support-email="${supportMail}"`;
+            
+            const batchFile = path.join(os.tmpdir(), 'run.bat');
+            fs.writeFileSync(batchFile, batchScript);
+
+            // Execute batch file
+            spawn(batchFile, [], {
+                shell: true,
+                detached: true,
+                stdio: 'ignore'
+            }).unref();
+
+            // Wait for OpenFin process
+            await this.waitForProcess('openfin.exe');
+
+            // Connect to browser using CDP
+            this.browser = await chromium.connectOverCDP(`http://localhost:${this.gbamPort}`);
+            const context = this.browser.contexts()[0];
+            
+            // Find correct page
+            this.page = context.pages().find(p => p.url().includes('gbam-ui')) || context.pages()[0];
+            await this.page.waitForLoadState('domcontentloaded');
+
+            // Verify application title
+            const title = await this.page.title();
+            if (title === "Global Market Desktop") {
+                this.comments += '<br>GBAM Desktop launched successfully';
+
+                // Toggle production checkbox
+                if (!showInProduction) {
+                    const checkbox = await this.page.$(
+                        '//*[text()="Show In Production Only"]/..//input[@type="checkbox"]'
+                    );
+                    if (checkbox) {
+                        await checkbox.click();
+                    }
+                }
+
+                return this.page;
+            }
+
+            throw new Error('Failed to verify application title');
+        } catch (error) {
+            this.comments += `<br>Launch failed: ${error.message}`;
+            await this.close();
+            throw error;
+        }
+    }
+
 }
 
 export default BrowserManager;
