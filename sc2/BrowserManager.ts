@@ -1,4 +1,6 @@
 import { homedir } from 'os';
+import os from 'os';
+import fs from 'fs';
 import { join } from 'path';
 import { Server } from 'net';
 // import { Browser, Page, chromium } from 'playwright';
@@ -405,12 +407,12 @@ class BrowserManager {
 
         try {
             // Kill existing processes
-            await this.taskKill('openfin.exe');
-            await this.taskKill('chromedriver.exe');
+            ProcessManager.taskKill('openfin.exe');
+            ProcessManager.taskKill('chromedriver.exe');
 
             // Determine installation path
             const username = os.userInfo().username;
-            const cdrivePath = path.join('C:\\Users', username, 'AppData', 'Local', 'OpenFin');
+            const cdrivePath = join('C:\\Users', username, 'AppData', 'Local', 'OpenFin');
             const ddrivePath = 'D:\\Apps\\OpenFin';
             const userPath = fs.existsSync(ddrivePath) ? ddrivePath : cdrivePath;
 
@@ -423,22 +425,18 @@ class BrowserManager {
             // Create batch script
             const batchScript = `cmd.exe /K "cd /D "${userPath}" && start OpenFinRVM.exe --config="${appURL}" --support-email="${supportMail}"`;
             
-            const batchFile = path.join(os.tmpdir(), 'run.bat');
+            const batchFile = join(os.tmpdir(), 'run.bat');
             fs.writeFileSync(batchFile, batchScript);
 
             // Execute batch file
-            spawn(batchFile, [], {
-                shell: true,
-                detached: true,
-                stdio: 'ignore'
-            }).unref();
+            execSync(batchFile, { stdio: 'ignore' });
 
             // Wait for OpenFin process
-            await this.waitForProcess('openfin.exe');
+            await ProcessManager.waitForProcess('openfin.exe');
 
             // Connect to browser using CDP
-            this.browser = await chromium.connectOverCDP(`http://localhost:${this.gbamPort}`);
-            const context = this.browser.contexts()[0];
+            const browser = await chromium.connectOverCDP(`http://localhost:${this.gbamPort}`);
+            const context = browser.contexts()[0];
             
             // Find correct page
             this.page = context.pages().find(p => p.url().includes('gbam-ui')) || context.pages()[0];
@@ -447,7 +445,7 @@ class BrowserManager {
             // Verify application title
             const title = await this.page.title();
             if (title === "Global Market Desktop") {
-                this.comments += '<br>GBAM Desktop launched successfully';
+                this.logger.addComment('GBAM Desktop launched successfully');
 
                 // Toggle production checkbox
                 if (!showInProduction) {
@@ -463,10 +461,10 @@ class BrowserManager {
             }
 
             throw new Error('Failed to verify application title');
-        } catch (error) {
-            this.comments += `<br>Launch failed: ${error.message}`;
-            await this.close();
-            throw error;
+        } catch (e) {
+            this.logger.addComment(`Launch failed: ${e}`);
+            await this.closeGBAMdesktop();
+            throw e;
         }
     }
 
