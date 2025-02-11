@@ -8,26 +8,29 @@ class ProcessManager {
     private childPids: Set<number> = new Set();
     private portsMap: Map<number, number[]> = new Map();
 
+    // 1. Сбор всех PID по имени процесса
     public async captureMainProcesses(): Promise<void> {
-        this.mainPids = new Set(await this.getOpenFinProcesses());
+        this.mainPids = new Set(await this.getProcessesByName());
         console.log('Main PIDs captured:', Array.from(this.mainPids));
     }
 
+    // 2. Поиск новых PID после запуска дочернего приложения
     public async captureChildProcesses(): Promise<void> {
-        const currentPids = new Set(await this.getOpenFinProcesses());
+        const currentPids = new Set(await this.getProcessesByName());
         this.childPids = new Set(
             [...currentPids].filter(pid => !this.mainPids.has(pid))
         );
         console.log('Child PIDs captured:', Array.from(this.childPids));
     }
 
+    // 3. Получение списка новых PID
     public getNonMainPids(): number[] {
         return Array.from(this.childPids);
     }
 
+    // 4. Поиск портов для PID
     public async findPortsForPids(pids: number[]): Promise<void> {
         this.portsMap.clear();
-        
         for (const pid of pids) {
             const ports = await this.getPortsByPid(pid);
             if (ports.length > 0) {
@@ -37,25 +40,22 @@ class ProcessManager {
         }
     }
 
-    private async getOpenFinProcesses(): Promise<number[]> {
+    private async getProcessesByName(): Promise<number[]> {
         return process.platform === 'win32' 
-            ? await this.getWindowsProcesses() 
-            : await this.getUnixProcesses();
+            ? this.getWindowsProcesses() 
+            : this.getUnixProcesses();
     }
 
     private async getWindowsProcesses(): Promise<number[]> {
         try {
             const { stdout } = await execAsync(
-                `wmic process where "name='openfin.exe'" get ProcessId,CommandLine /format:csv`
+                'wmic process where "name=\'openfin.exe\'" get ProcessId'
             );
 
             return stdout
                 .split('\r\n')
-                .filter(line => line.includes('--app='))
-                .map(line => {
-                    const parts = line.split(',');
-                    return parseInt(parts[parts.length - 2]);
-                })
+                .slice(1) // Пропускаем заголовок
+                .map(line => parseInt(line.trim()))
                 .filter(pid => !isNaN(pid));
         } catch (error) {
             console.error('Error getting Windows processes:', error);
@@ -65,15 +65,14 @@ class ProcessManager {
 
     private async getUnixProcesses(): Promise<number[]> {
         try {
-            const { stdout } = await execAsync(
-                `pgrep -f 'openfin.*--app='`
-            );
-
+            const { stdout } = await execAsync('pgrep openfin');
             return stdout
                 .split('\n')
                 .map(pidStr => parseInt(pidStr))
                 .filter(pid => !isNaN(pid));
         } catch (error) {
+            // pgrep возвращает код ошибки 1 если процессов не найдено
+            if (error.code === 1) return [];
             console.error('Error getting Unix processes:', error);
             return [];
         }
@@ -82,8 +81,8 @@ class ProcessManager {
     private async getPortsByPid(pid: number): Promise<number[]> {
         try {
             return process.platform === 'win32' 
-                ? await this.getWindowsPorts(pid) 
-                : await this.getUnixPorts(pid);
+                ? this.getWindowsPorts(pid) 
+                : this.getUnixPorts(pid);
         } catch (error) {
             console.error(`Error getting ports for PID ${pid}:`, error);
             return [];
@@ -102,7 +101,7 @@ class ProcessManager {
                     .filter(Boolean)
                     .map(Number)
             )];
-        } catch (error) {
+        } catch {
             return [];
         }
     }
@@ -120,7 +119,7 @@ class ProcessManager {
                     .filter(Boolean)
                     .map(Number)
             )];
-        } catch (error) {
+        } catch {
             return [];
         }
     }
@@ -133,3 +132,26 @@ class ProcessManager {
         return new Map(this.portsMap);
     }
 }
+
+// Пример использования
+async function main() {
+    const manager = new AsyncProcessManager();
+    
+    // 1. Собираем текущие процессы
+    await manager.captureMainProcesses();
+    
+    // 2. Запускаем дочернее приложение...
+    
+    // 3. Собираем новые процессы
+    await manager.captureChildProcesses();
+    
+    // 4. Ищем порты для новых процессов
+    await manager.findPortsForPids(manager.getNonMainPids());
+    
+    console.log('Результат:');
+    console.log('Основные PID:', manager.getMainPids());
+    console.log('Дочерние PID:', manager.getNonMainPids());
+    console.log('Порты:', manager.getPortsMap());
+}
+
+main().catch(console.error);
