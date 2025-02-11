@@ -1,136 +1,160 @@
-import { chromium, Browser } from 'playwright';
 import { execSync } from 'child_process';
 
-interface ProcessInfo {
-    pid: number;
-    ports: number[];
-}
+class ProcessManager {
+    private mainPids: Set<number> = new Set();
+    private childPids: Set<number> = new Set();
+    private portsMap: Map<number, number[]> = new Map();
 
-async function findNewOpenFinProcesses(initialPids: Set<number>): Promise<ProcessInfo[]> {
-    const currentProcesses = getOpenFinProcesses();
-    const newProcesses = currentProcesses.filter(p => !initialPids.has(p.pid));
-    
-    return Promise.all(
-        newProcesses.map(async p => ({
-            pid: p.pid,
-            ports: await getProcessPorts(p.pid)
-        }))
-    );
-}
-
-function getOpenFinProcesses(): { pid: number }[] {
-    // Для Windows
-    if (process.platform === 'win32') {
-        const output = execSync(
-            `wmic process where "name='openfin.exe'" get processid,commandline /format:csv`
-        ).toString();
-        
-        return output.split('\n')
-            .slice(1)
-            .filter(line => line.includes('--app='))
-            .map(line => ({
-                pid: parseInt(line.match(/,(\d+),/)?.[1] || '0'))
-            }))
-            .filter(p => !isNaN(p.pid));
+    // 1. Определить все PID для основного процесса
+    public captureMainProcesses(): void {
+        const processes = this.getOpenFinProcesses();
+        this.mainPids = new Set(processes.map(p => p.pid));
+        console.log('Main PIDs captured:', Array.from(this.mainPids));
     }
 
-    // Для Linux/MacOS
-    const output = execSync(
-        `pgrep -f 'openfin.*--app='`
-    ).toString();
-    
-    return output.split('\n')
-        .filter(Boolean)
-        .map(pidStr => ({ pid: parseInt(pidStr) }));
-}
+    // 2. Повторный вызов для дочерних процессов
+    public captureChildProcesses(): void {
+        const currentProcesses = this.getOpenFinProcesses();
+        const newPids = currentProcesses
+            .filter(p => !this.mainPids.has(p.pid))
+            .map(p => p.pid);
 
-async function getProcessPorts(pid: number): Promise<number[]> {
-    try {
-        // Для Windows
-        if (process.platform === 'win32') {
-            const output = execSync(
-                `netstat -ano | findstr :92 | findstr ${pid}`
-            ).toString();
-            
-            return [...new Set(
-                output.split('\n')
-                    .map(line => line.match(/:(\d+)/)?.[1])
-                    .filter(Boolean)
-                    .map(Number)
-            )];
-        }
+        this.childPids = new Set(newPids);
+        console.log('Child PIDs captured:', Array.from(this.childPids));
+    }
 
-        // Для Linux/MacOS
-        const output = execSync(
-            `lsof -aPi -p ${pid} -sTCP:LISTEN -nP`
-        ).toString();
+    // 3. Определить неосновные PIDs (дочерние)
+    public getNonMainPids(): number[] {
+        return Array.from(this.childPids);
+    }
+
+    // 4. Найти порты по PIDs
+    public findPortsForPids(pids: number[]): void {
+        this.portsMap.clear();
         
+        for (const pid of pids) {
+            const ports = this.getPortsByPid(pid);
+            if (ports.length > 0) {
+                this.portsMap.set(pid, ports);
+                console.log(`Found ports for PID ${pid}:`, ports);
+            }
+        }
+    }
+
+    private getOpenFinProcesses(): Array<{pid: number, cmd: string}> {
+        try {
+            if (process.platform === 'win32') {
+                return this.getWindowsProcesses();
+            }
+            return this.getUnixProcesses();
+        } catch (error) {
+            console.error('Error getting processes:', error);
+            return [];
+        }
+    }
+
+    private getWindowsProcesses(): Array<{pid: number, cmd: string}> {
+        const output = execSync(
+            `wmic process where "name='openfin.exe'" get ProcessId,CommandLine /format:csv`
+        ).toString();
+
+        return output.split('\r\n')
+            .slice(1)
+            .filter(line => line.includes('--app='))
+            .map(line => {
+                const parts = line.split(',');
+                return {
+                    pid: parseInt(parts[parts.length - 2]),
+                    cmd: parts[parts.length - 1]
+                };
+            });
+    }
+
+    private getUnixProcesses(): Array<{pid: number, cmd: string}> {
+        const output = execSync(
+            `ps -eo pid,args | grep 'openfin.*--app='`
+        ).toString();
+
+        return output.split('\n')
+            .filter(Boolean)
+            .map(line => {
+                const match = line.match(/^\s*(\d+)\s+(.*)/);
+                return match ? {
+                    pid: parseInt(match[1]),
+                    cmd: match[2]
+                } : null;
+            })
+            .filter(Boolean) as Array<{pid: number, cmd: string}>;
+    }
+
+    private getPortsByPid(pid: number): number[] {
+        try {
+            if (process.platform === 'win32') {
+                return this.getWindowsPorts(pid);
+            }
+            return this.getUnixPorts(pid);
+        } catch (error) {
+            console.error(`Error getting ports for PID ${pid}:`, error);
+            return [];
+        }
+    }
+
+    private getWindowsPorts(pid: number): number[] {
+        const output = execSync(
+            `netstat -ano | findstr ":92.*ESTABLISHED" | findstr "${pid}"`
+        ).toString();
+
+        return [...new Set(
+            output.split('\r\n')
+                .filter(Boolean)
+                .map(line => {
+                    const match = line.match(/:(\d+)\s/);
+                    return match ? parseInt(match[1]) : null;
+                })
+                .filter(Boolean)
+        )] as number[];
+    }
+
+    private getUnixPorts(pid: number): number[] {
+        const output = execSync(
+            `lsof -aPi -p ${pid} -sTCP:LISTEN`
+        ).toString();
+
         return [...new Set(
             output.split('\n')
                 .slice(1)
-                .map(line => line.match(/:(\d+)/)?.[1])
+                .map(line => {
+                    const match = line.match(/:(\d+)/);
+                    return match ? parseInt(match[1]) : null;
+                })
                 .filter(Boolean)
-                .map(Number)
-        )];
-    } catch {
-        return [];
+        )] as number[];
+    }
+
+    // Дополнительные методы для доступа к данным
+    public getMainPids(): number[] {
+        return Array.from(this.mainPids);
+    }
+
+    public getPortsMap(): Map<number, number[]> {
+        return new Map(this.portsMap);
     }
 }
 
-async function connectToChildApp() {
-    let mainBrowser: Browser;
-    let childBrowser: Browser;
+// Пример использования
+const manager = new ProcessManager();
 
-    try {
-        // 1. Получаем начальный список процессов
-        const initialProcesses = getOpenFinProcesses();
-        const initialPids = new Set(initialProcesses.map(p => p.pid));
+// 1. Захватить основные процессы
+manager.captureMainProcesses();
 
-        // 2. Запускаем главное приложение через Playwright
-        mainBrowser = await chromium.launch();
-        const mainPage = await mainBrowser.newPage();
-        await mainPage.goto('your-app://launcher');
+// 2. После запуска дочернего приложения
+manager.captureChildProcesses();
 
-        // 3. Запускаем дочернее приложение
-        await mainPage.click('#launch-child-app');
-        await mainPage.waitForTimeout(5000);
+// 3. Получить дочерние PIDs
+const childPids = manager.getNonMainPids();
 
-        // 4. Ищем новые процессы
-        const newProcesses = await findNewOpenFinProcesses(initialPids);
-        
-        // 5. Фильтруем порты разработчика (92xx)
-        const debugPorts = newProcesses
-            .flatMap(p => p.ports)
-            .filter(port => port >= 9200 && port <= 9299);
+// 4. Найти порты для дочерних процессов
+manager.findPortsForPids(childPids);
 
-        // 6. Пробуем подключиться ко всем найденным портам
-        for (const port of debugPorts) {
-            try {
-                childBrowser = await chromium.connectOverCDP(`http://localhost:${port}`);
-                const contexts = childBrowser.contexts();
-                
-                if (contexts.length > 0) {
-                    const childPage = contexts[0].pages()[0];
-                    console.log('Successfully connected to port:', port);
-                    return { mainBrowser, childBrowser };
-                }
-            } catch (error) {
-                console.log(`Failed to connect to port ${port}:`, error.message);
-            }
-        }
-
-        throw new Error('No valid debug ports found');
-
-    } catch (error) {
-        console.error('Error:', error);
-        throw error;
-    } finally {
-        await mainBrowser?.close();
-        await childBrowser?.close();
-    }
-}
-
-// Запуск
-connectToChildApp()
-    .then(() => console.log('Connection successful'))
-    .catch(() => process.exit(1));
+// Получить результат
+console.log('Final ports mapping:', manager.getPortsMap());
