@@ -423,7 +423,7 @@ class BrowserManager {
             const appURL = `http://gbam-ui.bankofamerica.com:55555/tag/GBAM%20Desktop%20Launcher/PROD?devtools_port=${this.gbamPort}`;
 
             // Create batch script
-            const batchScript = `cmd.exe /K "cd /D "${userPath}" && start OpenFinRVM.exe --config="${appURL}" --support-email="${supportMail}"`;
+            const batchScript = `cd /D "${userPath}" && start OpenFinRVM.exe --config="${appURL}" --support-email="${supportMail}"`;
             
             const batchFile = join(os.tmpdir(), 'run.bat');
             fs.writeFileSync(batchFile, batchScript);
