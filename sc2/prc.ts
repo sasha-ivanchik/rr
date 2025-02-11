@@ -1,17 +1,20 @@
-import { execSync } from 'child_process';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 class ProcessManager {
     private mainPids: Set<number> = new Set();
     private childPids: Set<number> = new Set();
     private portsMap: Map<number, number[]> = new Map();
 
-    public captureMainProcesses(): void {
-        this.mainPids = new Set(this.getOpenFinProcesses());
+    public async captureMainProcesses(): Promise<void> {
+        this.mainPids = new Set(await this.getOpenFinProcesses());
         console.log('Main PIDs captured:', Array.from(this.mainPids));
     }
 
-    public captureChildProcesses(): void {
-        const currentPids = new Set(this.getOpenFinProcesses());
+    public async captureChildProcesses(): Promise<void> {
+        const currentPids = new Set(await this.getOpenFinProcesses());
         this.childPids = new Set(
             [...currentPids].filter(pid => !this.mainPids.has(pid))
         );
@@ -22,30 +25,31 @@ class ProcessManager {
         return Array.from(this.childPids);
     }
 
-    public findPortsForPids(pids: number[]): void {
+    public async findPortsForPids(pids: number[]): Promise<void> {
         this.portsMap.clear();
-        pids.forEach(pid => {
-            const ports = this.getPortsByPid(pid);
+        
+        for (const pid of pids) {
+            const ports = await this.getPortsByPid(pid);
             if (ports.length > 0) {
                 this.portsMap.set(pid, ports);
                 console.log(`Found ports for PID ${pid}:`, ports);
             }
-        });
+        }
     }
 
-    private getOpenFinProcesses(): number[] {
+    private async getOpenFinProcesses(): Promise<number[]> {
         return process.platform === 'win32' 
-            ? this.getWindowsProcesses() 
-            : this.getUnixProcesses();
+            ? await this.getWindowsProcesses() 
+            : await this.getUnixProcesses();
     }
 
-    private getWindowsProcesses(): number[] {
+    private async getWindowsProcesses(): Promise<number[]> {
         try {
-            const output = execSync(
+            const { stdout } = await execAsync(
                 `wmic process where "name='openfin.exe'" get ProcessId,CommandLine /format:csv`
-            ).toString();
+            );
 
-            return output
+            return stdout
                 .split('\r\n')
                 .filter(line => line.includes('--app='))
                 .map(line => {
@@ -59,13 +63,13 @@ class ProcessManager {
         }
     }
 
-    private getUnixProcesses(): number[] {
+    private async getUnixProcesses(): Promise<number[]> {
         try {
-            const output = execSync(
+            const { stdout } = await execAsync(
                 `pgrep -f 'openfin.*--app='`
-            ).toString();
+            );
 
-            return output
+            return stdout
                 .split('\n')
                 .map(pidStr => parseInt(pidStr))
                 .filter(pid => !isNaN(pid));
@@ -75,42 +79,50 @@ class ProcessManager {
         }
     }
 
-    private getPortsByPid(pid: number): number[] {
+    private async getPortsByPid(pid: number): Promise<number[]> {
         try {
             return process.platform === 'win32' 
-                ? this.getWindowsPorts(pid) 
-                : this.getUnixPorts(pid);
+                ? await this.getWindowsPorts(pid) 
+                : await this.getUnixPorts(pid);
         } catch (error) {
             console.error(`Error getting ports for PID ${pid}:`, error);
             return [];
         }
     }
 
-    private getWindowsPorts(pid: number): number[] {
-        const output = execSync(
-            `netstat -ano | findstr ":92.*ESTABLISHED" | findstr "${pid}"`
-        ).toString();
+    private async getWindowsPorts(pid: number): Promise<number[]> {
+        try {
+            const { stdout } = await execAsync(
+                `netstat -ano | findstr ":92.*ESTABLISHED" | findstr "${pid}"`
+            );
 
-        return [...new Set(
-            output.split('\r\n')
-                .map(line => line.match(/:(\d+)\s/)?.[1])
-                .filter(Boolean)
-                .map(Number)
-        )];
+            return [...new Set(
+                stdout.split('\r\n')
+                    .map(line => line.match(/:(\d+)\s/)?.[1])
+                    .filter(Boolean)
+                    .map(Number)
+            )];
+        } catch (error) {
+            return [];
+        }
     }
 
-    private getUnixPorts(pid: number): number[] {
-        const output = execSync(
-            `lsof -aPi -p ${pid} -sTCP:LISTEN`
-        ).toString();
+    private async getUnixPorts(pid: number): Promise<number[]> {
+        try {
+            const { stdout } = await execAsync(
+                `lsof -aPi -p ${pid} -sTCP:LISTEN`
+            );
 
-        return [...new Set(
-            output.split('\n')
-                .slice(1)
-                .map(line => line.match(/:(\d+)/)?.[1])
-                .filter(Boolean)
-                .map(Number)
-        )];
+            return [...new Set(
+                stdout.split('\n')
+                    .slice(1)
+                    .map(line => line.match(/:(\d+)/)?.[1])
+                    .filter(Boolean)
+                    .map(Number)
+            )];
+        } catch (error) {
+            return [];
+        }
     }
 
     public getMainPids(): number[] {
