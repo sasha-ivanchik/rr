@@ -131,27 +131,44 @@ class ProcessManager {
     public getPortsMap(): Map<number, number[]> {
         return new Map(this.portsMap);
     }
-}
+// ===========================================================================================================================
+  
+    // Универсальный метод для убийства процессов
+  public async killOpenFin(): Promise<void> {
+    try {
+      if (process.platform === 'win32') {
+        // Для Windows
+        await execAsync(`taskkill /F /IM "openfin.exe"`);
+        console.log('Windows: OpenFin processes terminated');
+      } else {
+        // Для Linux/MacOS
+        await execAsync(`pkill -9 openfin || killall openfin`);
+        console.log('Unix: OpenFin processes terminated');
+      }
+    } catch (error) {
+      // Игнорируем ошибку "процесс не найден"
+      if (!error.message.includes('not found') && !error.message.includes('No such process')) {
+        console.error('Error killing processes:', error.message);
+      }
+    }
+  }
 
-// Пример использования
-async function main() {
-    const manager = new AsyncProcessManager();
-    
-    // 1. Собираем текущие процессы
-    await manager.captureMainProcesses();
-    
-    // 2. Запускаем дочернее приложение...
-    
-    // 3. Собираем новые процессы
-    await manager.captureChildProcesses();
-    
-    // 4. Ищем порты для новых процессов
-    await manager.findPortsForPids(manager.getNonMainPids());
-    
-    console.log('Результат:');
-    console.log('Основные PID:', manager.getMainPids());
-    console.log('Дочерние PID:', manager.getNonMainPids());
-    console.log('Порты:', manager.getPortsMap());
-}
+  // Альтернативный вариант с проверкой существования процессов
+  public async safeKillOpenFin(): Promise<void> {
+    try {
+      const command = process.platform === 'win32' 
+        ? `tasklist /FI "IMAGENAME eq openfin.exe"`
+        : `pgrep openfin`;
 
-main().catch(console.error);
+      const { stdout } = await execAsync(command);
+
+      if (stdout.toLowerCase().includes('openfin')) {
+        return this.killOpenFin();
+      }
+      console.log('No OpenFin processes running');
+    } catch (error) {
+      console.error('Error checking processes:', error.message);
+    }
+  }
+  
+}
