@@ -414,7 +414,221 @@ class UIManager {
             return { success: false, element: null };
         }
     }
+    // ====================================================================================================================================
+    // ====================================================================================================================================
+    // ====================================================================================================================================
+    async doubleClickElement(element: Locator): Promise<void> {
+        if (await element.isVisible()) {
+            await element.dblclick();
+            this.comments += '<br>double click event is successful';
+        }
+    }
+    
+    async rightClickElement(element: Locator): Promise<void> {
+        if (await element.isVisible()) {
+            await element.click({ button: 'right' });
+            this.comments += '<br>right click event is successful';
+        }
+    }
 
+    async mouseHover(element: Locator): Promise<void> {
+        if (await element.isVisible()) {
+            await element.hover();
+            this.comments += '<br>mouse hover event is successful';
+        }
+    }
+
+    async closeWindow(): Promise<void> {
+        const title = await this.page.title();
+        await this.page.close();
+        this.comments += `<br>closed window ${title}`;
+    }
+
+    async clickMenuItem(menuPath: string): Promise<void> {
+        const labels = menuPath.split('|');
+        for (const labelName of labels) {
+            if (labelName) {
+                const guiObject = await this.processParent(labelName, 'menuitem');
+                if (guiObject) {
+                    await guiObject.click();
+                    await this.page.waitForTimeout(5000);
+                    this.comments += `<br>clicking menuitem ${labelName}`;
+                }
+            }
+        }
+    }
+
+    async clickTreeButton(treePath: string, treeIndex: number = 0): Promise<void> {
+        const labels = treePath.split('|');
+        const objCheck = await this.getLabel(labels[0]);
+
+        if (objCheck) {
+            for (const labelName of labels) {
+                let guiObject: Locator | null = null;
+                if (labelName === labels[labels.length - 1] && !(await objCheck.getAttribute('class'))?.includes('dx-')) {
+                    guiObject = await this.processParent(labelName, 'TreeListItem', treeIndex);
+                } else {
+                    guiObject = await this.processParent(labelName, 'TreeButton', treeIndex);
+                }
+
+                if (guiObject && !(await guiObject.getAttribute('class'))?.includes('visibility-opened')) {
+                    await guiObject.click();
+                    await this.page.waitForTimeout(2000);
+                }
+            }
+        } else {
+            this.comments += `<br>the element ${treePath} not found`;
+        }
+    }
+
+    async clickTreeCheckbox(treePath: string, treeIndex: number = 0): Promise<void> {
+        await this.clickTreeButton(treePath, treeIndex);
+        const labelName = treePath.split('|').pop() || '';
+        const guiObject = await this.processParent(labelName, 'TreeCheckbox', treeIndex);
+        if (guiObject) {
+            await guiObject.click();
+        }
+    }
+
+    async clickTreeItem(labelName: string): Promise<boolean> {
+        const listObject = await this.processParent(labelName, 'webixtreeitem');
+        if (listObject) {
+            await listObject.hover();
+            await listObject.click();
+            this.comments += `<br>dropdown: selected ${labelName}`;
+            return true;
+        }
+        this.comments += `<br>dropdown: not able to find ${labelName}`;
+        return false;
+    }
+
+    async clickWebixTreeCheckbox(treePath: string): Promise<void> {
+        const labels = treePath.split('|');
+        for (const [index, label] of labels.entries()) {
+            let guiObject: Locator | null = null;
+            if (index === labels.length - 1) {
+                guiObject = await this.processParent(label, 'webixTreeCheckbox');
+                if (guiObject && !(await guiObject.isChecked())) {
+                    await guiObject.click();
+                }
+            } else {
+            guiObject = await this.processParent(label, 'webixTreeArrow');
+                if (guiObject) {
+                    await guiObject.click();
+                }
+            }
+        }
+    }
+    
+    async clickWebixListItem(labelname: string, index: number = 0): Promise<[boolean, Locator | null]> {
+        const listObject = await this.processParent(labelname, "webixlistitem");
+        if (listObject) {
+            const targetElement = listObject.nth(index);
+            if (await targetElement.isVisible()) {
+                await targetElement.hover();
+                await targetElement.click();
+                this.comments += `<br>dropdown: selected ${labelname}`;
+                return [true, listObject];
+            }
+        }
+        this.comments += `<br>dropdown: not able to find ${labelname}`;
+        return [false, null];
+    }
+    
+    async getParentInformation(obj: Locator): Promise<Locator | null> {
+        try {
+            return obj.locator('xpath=./..');
+        } catch (e) {
+            console.error('Error getting parent element:', e);
+            return null;
+        }
+    }
+    
+    async getChildInformation(obj: Locator): Promise<Locator | null> {
+        try {
+            return obj.locator('xpath=./child::*');
+        } catch (e) {
+            console.error('Error getting child element:', e);
+            return null;
+        }
+    }
+    
+    async columnchooser(treepath: string): Promise<Locator | null> {
+        const guiObject = await this.processParent("", "webixcolumnchooser");
+        if (guiObject) {
+            await guiObject.hover();
+            await guiObject.click();
+            await this.clickWebixTreeCheckbox(treepath);
+        }
+        return guiObject;
+    }
+    
+    async multiplecolumnchooser(treepath: string, treevalues: string[]): Promise<Locator | null> {
+        const guiObject = await this.processParent("", "webixcolumnchooser");
+        if (guiObject) {
+            await guiObject.hover();
+            await guiObject.click();
+            await this.page.waitForTimeout(5000);
+            
+            const labelname = treepath;
+            try {
+                const targetElement = this.page.locator(`//div[@webix_tm_id='${labelname}']`).last();
+                await targetElement.scrollIntoViewIfNeeded();
+                
+                const arrow = await this.processParent(labelname, "webixTreeArrow");
+                if (arrow) await arrow.click();
+            } catch (e) {
+                console.error('Error in multiplecolumnchooser:', e);
+            }
+        
+            for (const i of treevalues) {
+                const element = this.page.locator(`//div[@webix_tm_id='${i}']`).last();
+                await element.scrollIntoViewIfNeeded();
+                
+                const checkbox = await this.processParent(i, "webixTreeCheckbox");
+                if (checkbox && !(await checkbox.isChecked())) {
+                    await checkbox.click();
+                }
+            }
+        }
+        return guiObject;
+    }
+      
+    // TODO need to implement using python
+    async readqztablefromsandra(dbname: string, dbpath: string): Promise<any> {
+        try {
+            const dbConn = await this.connectToSandra(dbname);
+            return await dbConn.read(dbpath).contents;
+        } catch (e) {
+            console.error("Exception while reading data from sandra:", e);
+            throw e;
+        }
+    }
+    
+    async waitForLoadElement(timeout: number = 30000): Promise<void> {
+        const progressBarLocator = this.page!.locator("div.webix_progress_icon[role='progressbar']");
+        
+        await this.page!.waitForFunction(async () => {
+            const element = document.querySelector("div.webix_progress_icon[role='progressbar']");
+            return !element || window.getComputedStyle(element).display === 'none';
+        }, { timeout });
+    
+        console.log('Page loaded successfully');
+    }
+    
+    // TODO need to implement using python
+    async connectToSandra(dbname: string) {
+        return 'some string';
+    }
 }
+    
+//     // TODO need to implement using python
+//     async function connectToSandra(dbname: string) {
+//       return {
+//         read: (path: string) => ({
+//           contents: {}
+//         })
+//     };
+
 
 export default UIManager;
