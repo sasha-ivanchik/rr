@@ -8,16 +8,9 @@ export class DatePickerPage {
   }
 
   async selectDate(dateString: string): Promise<void> {
-    // Парсим дату
     const [month, day, year] = this.parseDate(dateString);
-    
-    // Открываем календарь
     await this.openCalendar();
-    
-    // Настраиваем правильный месяц и год
-    await this.navigateToCorrectMonth(year, month);
-    
-    // Выбираем день
+    await this.navigateToDate(year, month);
     await this.selectDay(day);
   }
 
@@ -27,50 +20,73 @@ export class DatePickerPage {
   }
 
   private async openCalendar(): Promise<void> {
-    const calendarTrigger = this.page.locator('[role="combobox"]');
-    await calendarTrigger.click();
+    await this.page.locator('[role="combobox"]').click();
     await this.page.waitForSelector('.MuiPickersBasePicker-container');
   }
 
-  private async navigateToCorrectMonth(targetYear: number, targetMonth: number): Promise<void> {
-    const monthHeader = this.page.locator('.MuiPickersCalendarHeader-switchHeader');
-    const nextButton = this.page.locator('[aria-label="Next month"]');
+  private async navigateToDate(targetYear: number, targetMonth: number): Promise<void> {
+    const currentDate = await this.getCurrentCalendarDate();
+    const targetDate = new Date(targetYear, targetMonth - 1);
     
-    let maxAttempts = 12;
-    let currentHeader = await monthHeader.textContent();
+    const diffMonths = this.calculateMonthDifference(currentDate, targetDate);
+    
+    if (diffMonths === 0) return;
 
-    while (maxAttempts-- > 0 && !this.isCorrectMonth(currentHeader, targetYear, targetMonth)) {
-      await nextButton.click();
-      currentHeader = await monthHeader.textContent();
-    }
+    const navigationButton = diffMonths > 0 
+      ? this.page.locator('[aria-label="Next month"]')
+      : this.page.locator('[aria-label="Previous month"]');
 
-    if (maxAttempts <= 0) {
-      throw new Error('Превышено количество попыток поиска месяца');
+    for (let i = 0; i < Math.abs(diffMonths); i++) {
+      await navigationButton.click();
+      await this.waitForDateUpdate();
+      
+      // Дополнительная проверка после каждого клика
+      const newDate = await this.getCurrentCalendarDate();
+      if (this.isTargetMonthReached(newDate, targetYear, targetMonth)) break;
     }
   }
 
-  private isCorrectMonth(headerText: string | null, targetYear: number, targetMonth: number): boolean {
-    if (!headerText) return false;
+  private async getCurrentCalendarDate(): Promise<Date> {
+    const headerText = await this.page.locator('.MuiPickersCalendarHeader-switchHeader')
+      .textContent() || '';
     
-    // Форматируем дату в формат календаря (пример: "July 2023")
-    const targetDate = new Date(targetYear, targetMonth - 1);
-    const formattedTarget = targetDate.toLocaleDateString('en-US', {
-      month: 'long',
-      year: 'numeric'
-    });
+    // Парсинг разных форматов даты (пример: "July 2023", "Jul 2023", "7/2023")
+    const [monthPart, yearPart] = headerText
+      .replace(/(\d+)\s*\/\s*(\d+)/, '$1 $2') // Для формата "MM/YYYY"
+      .split(/\s+/);
+    
+    const month = new Date(`${monthPart} 1, ${yearPart}`).getMonth() + 1;
+    return new Date(Number(yearPart), month - 1);
+  }
 
-    return headerText.trim() === formattedTarget;
+  private calculateMonthDifference(a: Date, b: Date): number {
+    return (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth());
+  }
+
+  private async waitForDateUpdate(): Promise<void> {
+    await this.page.waitForFunction(() => {
+      const header = document.querySelector('.MuiPickersCalendarHeader-switchHeader');
+      return header && !header.textContent?.includes('…');
+    });
+  }
+
+  private isTargetMonthReached(currentDate: Date, targetYear: number, targetMonth: number): boolean {
+    return currentDate.getFullYear() === targetYear && 
+           currentDate.getMonth() === targetMonth - 1;
   }
 
   private async selectDay(day: number): Promise<void> {
-    const dayButton = this.page.locator(
-      `button[role="gridcell"]:not([disabled]) [data-mui-test="day"]:text-is("${day}")`
+    const dayLocator = this.page.locator(
+      `//button[contains(@class, 'MuiPickersDay-day')]
+      [not(contains(@class, 'MuiPickersDay-hidden'))]
+      [not(@disabled)]
+      [.//text()="${day}"]`
     ).first();
 
-    if (!(await dayButton.isEnabled())) {
-      throw new Error(`Дата ${day} недоступна для выбора`);
+    if (!(await dayLocator.isVisible())) {
+      throw new Error(`Day ${day} not found in calendar`);
     }
 
-    await dayButton.click();
+    await dayLocator.click();
   }
 }
