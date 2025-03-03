@@ -29,22 +29,33 @@ export class DatePickerPage {
     const targetDate = new Date(targetYear, targetMonth - 1);
     
     const diffMonths = this.calculateMonthDifference(currentDate, targetDate);
-    
     if (diffMonths === 0) return;
 
-    const navigationButton = diffMonths > 0 
-      ? this.page.locator('[aria-label="Next month"]')
-      : this.page.locator('[aria-label="Previous month"]');
+    const isForward = diffMonths > 0;
+    const maxAttempts = Math.abs(diffMonths) + 2; // +2 как buffer
 
-    for (let i = 0; i < Math.abs(diffMonths); i++) {
-      await navigationButton.click();
-      await this.waitForDateUpdate();
-      
-      // Дополнительная проверка после каждого клика
-      const newDate = await this.getCurrentCalendarDate();
-      if (this.isTargetMonthReached(newDate, targetYear, targetMonth)) break;
+    for (let i = 0; i < maxAttempts; i++) {
+        const activeButtons = this.page.locator('button[tabindex="0"]');
+        const buttonCount = await activeButtons.count();
+
+        if (buttonCount < 1) throw new Error('Нет активных кнопок');
+        if (buttonCount < 2 && isForward) throw new Error('Кнопка Next недоступна');
+
+        const buttonIndex = isForward ? 
+            Math.min(1, buttonCount - 1) : // Берем последнюю кнопку если только одна
+            0;
+
+        const navigationButton = activeButtons.nth(buttonIndex);
+        await navigationButton.click();
+        await this.waitForDateUpdate();
+
+        const newDate = await this.getCurrentCalendarDate();
+        if (this.isTargetMonthReached(newDate, targetYear, targetMonth)) break;
+        
+        // Защита от бесконечного цикла
+        if (i === maxAttempts - 1) throw new Error('Превышено число попыток');
     }
-  }
+    }
 
   private async getCurrentCalendarDate(): Promise<Date> {
     const headerText = await this.page.locator('.MuiPickersCalendarHeader-switchHeader')
