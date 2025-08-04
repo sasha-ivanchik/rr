@@ -1,22 +1,32 @@
-const locator = page.locator('your_selector_here');
-
-const xpath = await locator.evaluate(el => {
-    let path = '';
-    while (el && el.nodeType === Node.ELEMENT_NODE) {
-        let index = 1;
-        let sibling = el.previousSibling;
-        while (sibling) {
-            if (sibling.nodeType === Node.ELEMENT_NODE && sibling.nodeName === el.nodeName) {
-                index++;
-            }
-            sibling = sibling.previousSibling;
+async waitForAnimationsToEnd(timeout = 2000) {
+    await this.page.evaluate((timeout) => {
+      return new Promise<void>((resolve) => {
+        const elements = Array.from(document.querySelectorAll('*'));
+        let remaining = 0;
+        const done = () => {
+          remaining--;
+          if (remaining <= 0) resolve();
+        };
+  
+        elements.forEach(el => {
+          const style = getComputedStyle(el);
+          const hasTransition = style.transitionDuration !== '0s';
+          const hasAnimation = style.animationName !== 'none' && style.animationIterationCount !== 'infinite';
+  
+          if (hasTransition || hasAnimation) {
+            remaining++;
+            el.addEventListener('transitionend', done, { once: true });
+            el.addEventListener('animationend', done, { once: true });
+          }
+        });
+  
+        if (remaining === 0) {
+          resolve();
         }
-        const tagName = el.nodeName.toLowerCase();
-        const step = (index > 1) ? `${tagName}[${index}]` : tagName;
-        path = `/${step}${path ? '/' + path : ''}`;
-        el = el.parentNode as Element;
-    }
-    return path;
-});
-
-console.log(`XPath: ${xpath}`);
+  
+        // Safety net: timeout in case animation events never fire
+        setTimeout(() => resolve(), timeout);
+      });
+    }, timeout);
+  }
+  

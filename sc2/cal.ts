@@ -1,103 +1,81 @@
-import { Page, Locator } from '@playwright/test';
+import { Page } from '@playwright/test';
+import ExcelJS from 'exceljs';
+import * as fs from 'fs';
 
-export class DatePickerPage {
-  private readonly page: Page;
+export async function parseHtmlTableInChunks(
+  page: Page,
+  tableSelector: string,
+  chunkSize = 1000,
+  outputPath = './output.xlsx'
+) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Sheet1');
 
-  constructor(page: Page) {
-    this.page = page;
-  }
+  let currentRow = 1;
+  let processedRows: string[][] = [];
 
-  async selectDate(dateString: string): Promise<void> {
-    const [month, day, year] = this.parseDate(dateString);
-    await this.openCalendar();
-    await this.navigateToDate(year, month);
-    await this.selectDay(day);
-  }
+  const tableData = await page.locator(tableSelector).evaluate((table: HTMLTableElement) => {
+    const result: string[][] = [];
+    const rowspanMap: Record<string, { value: string; left: number }> = {};
 
-  private parseDate(dateString: string): [number, number, number] {
-    const [month, day, year] = dateString.split('/').map(Number);
-    return [month, day, year];
-  }
+    const rows = Array.from(table.rows);
 
-  private async openCalendar(): Promise<void> {
-    await this.page.locator('[role="combobox"]').click();
-    await this.page.waitForSelector('.MuiPickersBasePicker-container');
-  }
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+      const row = rows[rowIndex];
+      const resultRow: string[] = [];
+      let colIndex = 0;
 
-  private async navigateToDate(targetYear: number, targetMonth: number): Promise<void> {
-    const currentDate = await this.getCurrentCalendarDate();
-    const targetDate = new Date(targetYear, targetMonth - 1);
-    
-    const diffMonths = this.calculateMonthDifference(currentDate, targetDate);
-    if (diffMonths === 0) return;
+      while (colIndex < row.cells.length || Object.keys(rowspanMap).some(k => +k.split(',')[0] === rowIndex)) {
+        while (rowspanMap[`${rowIndex},${resultRow.length}`]) {
+          const spanData = rowspanMap[`${rowIndex},${resultRow.length}`];
+          resultRow.push(spanData.value);
 
-    const isForward = diffMonths > 0;
-    const maxAttempts = Math.abs(diffMonths) + 2; // +2 как buffer
+          if (spanData.left > 1) {
+            rowspanMap[`${rowIndex + 1},${resultRow.length}`] = {
+              value: spanData.value,
+              left: spanData.left - 1,
+            };
+          }
 
-    for (let i = 0; i < maxAttempts; i++) {
-        const activeButtons = this.page.locator('button[tabindex="0"]');
-        const buttonCount = await activeButtons.count();
+          delete rowspanMap[`${rowIndex},${resultRow.length}`];
+        }
 
-        if (buttonCount < 1) throw new Error('Нет активных кнопок');
-        if (buttonCount < 2 && isForward) throw new Error('Кнопка Next недоступна');
+        const cell = row.cells[colIndex];
+        if (!cell) break;
 
-        const buttonIndex = isForward ? 
-            Math.min(1, buttonCount - 1) : // Берем последнюю кнопку если только одна
-            0;
+        const text = cell.innerText.trim();
+        const rowspan = Number(cell.getAttribute('rowspan') || 1);
 
-        const navigationButton = activeButtons.nth(buttonIndex);
-        await navigationButton.click();
-        await this.waitForDateUpdate();
+        resultRow.push(text);
 
-        const newDate = await this.getCurrentCalendarDate();
-        if (this.isTargetMonthReached(newDate, targetYear, targetMonth)) break;
-        
-        // Защита от бесконечного цикла
-        if (i === maxAttempts - 1) throw new Error('Превышено число попыток');
-    }
-    }
+        if (rowspan > 1) {
+          rowspanMap[`${rowIndex + 1},${resultRow.length - 1}`] = {
+            value: text,
+            left: rowspan - 1,
+          };
+        }
 
-  private async getCurrentCalendarDate(): Promise<Date> {
-    const headerText = await this.page.locator('.MuiPickersCalendarHeader-switchHeader')
-      .textContent() || '';
-    
-    // Парсинг разных форматов даты (пример: "July 2023", "Jul 2023", "7/2023")
-    const [monthPart, yearPart] = headerText
-      .replace(/(\d+)\s*\/\s*(\d+)/, '$1 $2') // Для формата "MM/YYYY"
-      .split(/\s+/);
-    
-    const month = new Date(`${monthPart} 1, ${yearPart}`).getMonth() + 1;
-    return new Date(Number(yearPart), month - 1);
-  }
+        colIndex++;
+      }
 
-  private calculateMonthDifference(a: Date, b: Date): number {
-    return (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth());
-  }
-
-  private async waitForDateUpdate(): Promise<void> {
-    await this.page.waitForFunction(() => {
-      const header = document.querySelector('.MuiPickersCalendarHeader-switchHeader');
-      return header && !header.textContent?.includes('…');
-    });
-  }
-
-  private isTargetMonthReached(currentDate: Date, targetYear: number, targetMonth: number): boolean {
-    return currentDate.getFullYear() === targetYear && 
-           currentDate.getMonth() === targetMonth - 1;
-  }
-
-  private async selectDay(day: number): Promise<void> {
-    const dayLocator = this.page.locator(
-      `//button[contains(@class, 'MuiPickersDay-day')]
-      [not(contains(@class, 'MuiPickersDay-hidden'))]
-      [not(@disabled)]
-      [.//text()="${day}"]`
-    ).first();
-
-    if (!(await dayLocator.isVisible())) {
-      throw new Error(`Day ${day} not found in calendar`);
+      result.push(resultRow);
     }
 
-    await dayLocator.click();
+    return result;
+  });
+
+  for (let i = 0; i < tableData.length; i++) {
+    processedRows.push(tableData[i]);
+
+    if (processedRows.length === chunkSize || i === tableData.length - 1) {
+      for (const row of processedRows) {
+        sheet.addRow(row);
+        currentRow++;
+      }
+      processedRows = [];
+    }
   }
+
+  await workbook.xlsx.writeFile(outputPath);
+  console.log(`✅ Done writing to ${outputPath}`);
 }
