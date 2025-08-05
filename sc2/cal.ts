@@ -1,81 +1,78 @@
 import { Page } from '@playwright/test';
 import ExcelJS from 'exceljs';
-import * as fs from 'fs';
 
-export async function parseHtmlTableInChunks(
-  page: Page,
-  tableSelector: string,
-  chunkSize = 1000,
-  outputPath = './output.xlsx'
-) {
-  const workbook = new ExcelJS.Workbook();
-  const sheet = workbook.addWorksheet('Sheet1');
+export class TablePage {
+  constructor(private readonly page: Page) {}
 
-  let currentRow = 1;
-  let processedRows: string[][] = [];
+  async exportTableToExcel(selector: string, outputPath = './output.xlsx', chunkSize = 1000) {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Sheet1');
 
-  const tableData = await page.locator(tableSelector).evaluate((table: HTMLTableElement) => {
-    const result: string[][] = [];
-    const rowspanMap: Record<string, { value: string; left: number }> = {};
+    let currentRow = 1;
+    let processedRows: string[][] = [];
 
-    const rows = Array.from(table.rows);
+    const tableData = await this.page.locator(selector).evaluate((table: HTMLTableElement) => {
+      const result: string[][] = [];
+      const rowspanMap: Record<string, string> = {};
 
-    for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
-      const row = rows[rowIndex];
-      const resultRow: string[] = [];
-      let colIndex = 0;
+      const rows = Array.from(table.rows);
 
-      while (colIndex < row.cells.length || Object.keys(rowspanMap).some(k => +k.split(',')[0] === rowIndex)) {
-        while (rowspanMap[`${rowIndex},${resultRow.length}`]) {
-          const spanData = rowspanMap[`${rowIndex},${resultRow.length}`];
-          resultRow.push(spanData.value);
+      for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+        const row = rows[rowIndex];
+        const resultRow: string[] = [];
 
-          if (spanData.left > 1) {
-            rowspanMap[`${rowIndex + 1},${resultRow.length}`] = {
-              value: spanData.value,
-              left: spanData.left - 1,
-            };
+        let colIndex = 0;
+        let actualCol = 0;
+
+        while (colIndex < row.cells.length || true) {
+          const key = `${rowIndex},${actualCol}`;
+
+          // Вставка данных из rowspanMap, если есть
+          if (rowspanMap[key]) {
+            resultRow.push(rowspanMap[key]);
+            actualCol++;
+            continue;
           }
 
-          delete rowspanMap[`${rowIndex},${resultRow.length}`];
+          const cell = row.cells[colIndex];
+          if (!cell) break;
+
+          const text = cell.innerText.trim();
+          const rowspan = Number(cell.getAttribute('rowspan') || 1);
+
+          resultRow.push(text);
+
+          if (rowspan > 1) {
+            for (let offset = 1; offset < rowspan; offset++) {
+              const targetKey = `${rowIndex + offset},${actualCol}`;
+              rowspanMap[targetKey] = text;
+            }
+          }
+
+          colIndex++;
+          actualCol++;
         }
 
-        const cell = row.cells[colIndex];
-        if (!cell) break;
+        result.push(resultRow);
+      }
 
-        const text = cell.innerText.trim();
-        const rowspan = Number(cell.getAttribute('rowspan') || 1);
+      return result;
+    });
 
-        resultRow.push(text);
+    // Пакетная запись в Excel
+    for (let i = 0; i < tableData.length; i++) {
+      processedRows.push(tableData[i]);
 
-        if (rowspan > 1) {
-          rowspanMap[`${rowIndex + 1},${resultRow.length - 1}`] = {
-            value: text,
-            left: rowspan - 1,
-          };
+      if (processedRows.length === chunkSize || i === tableData.length - 1) {
+        for (const row of processedRows) {
+          sheet.addRow(row);
+          currentRow++;
         }
-
-        colIndex++;
+        processedRows = [];
       }
-
-      result.push(resultRow);
     }
 
-    return result;
-  });
-
-  for (let i = 0; i < tableData.length; i++) {
-    processedRows.push(tableData[i]);
-
-    if (processedRows.length === chunkSize || i === tableData.length - 1) {
-      for (const row of processedRows) {
-        sheet.addRow(row);
-        currentRow++;
-      }
-      processedRows = [];
-    }
+    await workbook.xlsx.writeFile(outputPath);
+    console.log(`✅ Exported Excel: ${outputPath}`);
   }
-
-  await workbook.xlsx.writeFile(outputPath);
-  console.log(`✅ Done writing to ${outputPath}`);
 }
