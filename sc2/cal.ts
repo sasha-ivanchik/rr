@@ -4,10 +4,15 @@ import ExcelJS from 'exceljs';
 export class TablePage {
   constructor(private readonly page: Page) {}
 
-  async exportTableToExcel(selector: string, outputPath = './output.xlsx') {
+  async exportTableToExcelInChunks(
+    selector: string,
+    outputPath = './output.xlsx',
+    chunkSize = 100
+  ) {
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Sheet1');
 
+    // Скрапим таблицу с учетом rowspan/colspan
     const tableData = await this.page.locator(selector).evaluate((table: HTMLTableElement) => {
       const result: string[][] = [];
       const spanMap: Record<string, string> = {};
@@ -59,8 +64,11 @@ export class TablePage {
       });
     });
 
-    for (const row of tableData) {
-      sheet.addRow(row);
+    // 🔁 Пишем данные в Excel чанками
+    for (let i = 0; i < tableData.length; i += chunkSize) {
+      const chunk = tableData.slice(i, i + chunkSize);
+      chunk.forEach(row => sheet.addRow(row));
+      console.log(`✅ Wrote rows ${i} to ${i + chunk.length - 1}`);
     }
 
     await workbook.xlsx.writeFile(outputPath);
