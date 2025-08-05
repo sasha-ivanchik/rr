@@ -13,7 +13,7 @@ export class TablePage {
 
     const tableData = await this.page.locator(selector).evaluate((table: HTMLTableElement) => {
       const result: string[][] = [];
-      const rowspanMap: Record<string, string> = {};
+      const rowspanMap: Record<string, string> = {}; // key = `${rowIndex},${colIndex}`
 
       const rows = Array.from(table.rows);
 
@@ -22,35 +22,36 @@ export class TablePage {
         const resultRow: string[] = [];
 
         let colIndex = 0;
-        let actualCol = 0;
 
-        while (colIndex < row.cells.length || true) {
-          const key = `${rowIndex},${actualCol}`;
-
-          // Вставка данных из rowspanMap, если есть
+        while (true) {
+          // Заполнить ячейку из rowspanMap, если такая есть
+          const key = `${rowIndex},${colIndex}`;
           if (rowspanMap[key]) {
             resultRow.push(rowspanMap[key]);
-            actualCol++;
+            colIndex++;
             continue;
           }
 
-          const cell = row.cells[colIndex];
+          const cell = row.cells[0]; // всегда берём первый элемент, т.к. мы его сдвигаем
           if (!cell) break;
 
           const text = cell.innerText.trim();
           const rowspan = Number(cell.getAttribute('rowspan') || 1);
+          const colspan = Number(cell.getAttribute('colspan') || 1);
 
-          resultRow.push(text);
-
-          if (rowspan > 1) {
-            for (let offset = 1; offset < rowspan; offset++) {
-              const targetKey = `${rowIndex + offset},${actualCol}`;
-              rowspanMap[targetKey] = text;
+          // вставить значение текущей ячейки с учетом colspan
+          for (let c = 0; c < colspan; c++) {
+            resultRow[colIndex] = text;
+            // если есть rowspan, запланировать вставку на будущие строки
+            if (rowspan > 1) {
+              for (let r = 1; r < rowspan; r++) {
+                rowspanMap[`${rowIndex + r},${colIndex}`] = text;
+              }
             }
+            colIndex++;
           }
 
-          colIndex++;
-          actualCol++;
+          row.deleteCell(0); // удаляем уже обработанную ячейку
         }
 
         result.push(resultRow);
