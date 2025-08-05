@@ -4,73 +4,63 @@ import ExcelJS from 'exceljs';
 export class TablePage {
   constructor(private readonly page: Page) {}
 
-  async exportTableToExcel(selector: string, outputPath = './output.xlsx', chunkSize = 1000) {
+  async exportTableToExcel(selector: string, outputPath = './output.xlsx') {
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Sheet1');
 
-    let currentRow = 1;
-    let processedRows: string[][] = [];
-
     const tableData = await this.page.locator(selector).evaluate((table: HTMLTableElement) => {
       const result: string[][] = [];
-      const rowspanMap: Record<string, string> = {}; // key = `${rowIndex},${colIndex}`
+      const spanMap: Record<string, string> = {};
 
-      const rows = Array.from(table.rows);
-
+      const rows = Array.from(table.querySelectorAll('tr'));
       for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
         const row = rows[rowIndex];
-        const resultRow: string[] = [];
+        const cells = Array.from(row.querySelectorAll('th, td'));
+        const rowData: string[] = [];
 
         let colIndex = 0;
 
-        while (true) {
-          // Заполнить ячейку из rowspanMap, если такая есть
-          const key = `${rowIndex},${colIndex}`;
-          if (rowspanMap[key]) {
-            resultRow.push(rowspanMap[key]);
+        for (const cell of cells) {
+          // Пропускаем колонки, занятые rowspan из предыдущих строк
+          while (spanMap[`${rowIndex},${colIndex}`] !== undefined) {
+            rowData[colIndex] = spanMap[`${rowIndex},${colIndex}`];
             colIndex++;
-            continue;
           }
 
-          const cell = row.cells[0]; // всегда берём первый элемент, т.к. мы его сдвигаем
-          if (!cell) break;
+          const text = cell.textContent?.trim() ?? '';
+          const rowspan = parseInt(cell.getAttribute('rowspan') || '1');
+          const colspan = parseInt(cell.getAttribute('colspan') || '1');
 
-          const text = cell.innerText.trim();
-          const rowspan = Number(cell.getAttribute('rowspan') || 1);
-          const colspan = Number(cell.getAttribute('colspan') || 1);
-
-          // вставить значение текущей ячейки с учетом colspan
+          // Записываем значение в текущую строку
           for (let c = 0; c < colspan; c++) {
-            resultRow[colIndex] = text;
-            // если есть rowspan, запланировать вставку на будущие строки
-            if (rowspan > 1) {
-              for (let r = 1; r < rowspan; r++) {
-                rowspanMap[`${rowIndex + r},${colIndex}`] = text;
+            rowData[colIndex + c] = text;
+          }
+
+          // Запоминаем значение для будущих строк
+          if (rowspan > 1) {
+            for (let r = 1; r < rowspan; r++) {
+              for (let c = 0; c < colspan; c++) {
+                spanMap[`${rowIndex + r},${colIndex + c}`] = text;
               }
             }
-            colIndex++;
           }
 
-          row.deleteCell(0); // удаляем уже обработанную ячейку
+          colIndex += colspan;
         }
 
-        result.push(resultRow);
+        result.push(rowData);
       }
 
-      return result;
+      // Выравниваем строки по длине
+      const maxCols = Math.max(...result.map(r => r.length));
+      return result.map(row => {
+        while (row.length < maxCols) row.push('');
+        return row;
+      });
     });
 
-    // Пакетная запись в Excel
-    for (let i = 0; i < tableData.length; i++) {
-      processedRows.push(tableData[i]);
-
-      if (processedRows.length === chunkSize || i === tableData.length - 1) {
-        for (const row of processedRows) {
-          sheet.addRow(row);
-          currentRow++;
-        }
-        processedRows = [];
-      }
+    for (const row of tableData) {
+      sheet.addRow(row);
     }
 
     await workbook.xlsx.writeFile(outputPath);
