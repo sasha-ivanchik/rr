@@ -1,49 +1,34 @@
-import { Page, CDPSession } from 'playwright';
+import { chromium, CDPSession, Page, BrowserContext } from 'playwright';
 
-export class CDPHeartbeat {
-  private intervalId?: NodeJS.Timeout;
-  private stopped = false;
+function autoKeepAlive(page: Page, context: BrowserContext, intervalMs = 3000) {
+  context.newCDPSession(page).then((session: CDPSession) => {
+    let active = true;
 
-  constructor(private cdp: CDPSession, private intervalMs = 5000) {
-    this.start();
-  }
-
-  private start() {
-    this.intervalId = setInterval(async () => {
-      if (this.stopped) return;
-      try {
-        await this.cdp.send('Runtime.evaluate', { expression: '1 + 1' });
-        // console.debug('✅ CDP Heartbeat ping');
-      } catch (err) {
-        console.warn('❌ CDP Heartbeat failed:', err);
-        this.stop();
+    const loop = async () => {
+      while (active) {
+        try {
+          await session.send('Runtime.evaluate', { expression: 'void 0' });
+        } catch (e) {
+          console.warn('[keep-alive] CDP ping failed. Stopping.');
+          break;
+        }
+        await new Promise(res => setTimeout(res, intervalMs));
       }
-    }, this.intervalMs);
-  }
+    };
 
-  public stop() {
-    if (this.stopped) return;
-    this.stopped = true;
-    if (this.intervalId) {
-      clearInterval(this.intervalId);
-    }
-  }
+    page.on('close', () => (active = false));
+    context.browser()?.on('disconnected', () => (active = false));
+
+    loop().catch((e) => console.error('[keep-alive] Unexpected error:', e));
+  });
 }
 
-
-import { chromium } from 'playwright';
-import { CDPHeartbeat } from './CDPHeartbeat';
-
 (async () => {
-  const browser = await chromium.connectOverCDP({ wsEndpoint: 'ws://localhost:9222/devtools/browser/...' });
-
+  const browser = await chromium.connectOverCDP(cdpUrl);
   const context = browser.contexts()[0];
-  const page = context.pages()[0];
+  const page = await context.newPage();
 
-  const cdpSession = await context.newCDPSession(page);
-  const heartbeat = new CDPHeartbeat(cdpSession, 3000);
+  autoKeepAlive(page, context); // 🔁 keep-alive здесь
 
-  // ... твоя логика работы с app ...
-
-  // heartbeat сам отключится через stop() или при ошибке
+  // дальше твоя логика
 })();
