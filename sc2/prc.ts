@@ -1,96 +1,62 @@
-async function readExcelSheet(filePath: string, sheetName: string): Promise<string[][]> {
-  const workbook = new ExcelJS.Workbook();
-  
-  try {
-    await workbook.xlsx.readFile(filePath);
-  } catch (error) {
-    throw new Error(`Failed to read Excel file "${filePath}": ${error instanceof Error ? error.message : 'Unknown error'}`);
-  }
-  
-  const worksheet = workbook.getWorksheet(sheetName);
-  
-  if (!worksheet) {
-    const availableSheets = workbook.worksheets.map(ws => ws.name).join(', ');
-    throw new Error(`Sheet "${sheetName}" not found. Available sheets: ${availableSheets}`);
-  }
-  
-  const result: string[][] = [];
-  const CHUNK_SIZE = 1000; // Обрабатываем по 1000 строк за раз
-  let tempChunk: string[][] = [];
-  let processedRows = 0;
-  
-  try {
-    worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-      const rowData: string[] = [];
-      
-      // Используем actualCellCount для экономии памяти
-      const cellCount = row.actualCellCount || row.cellCount || 0;
-      const maxCols = Math.min(cellCount, 500); // Ограничиваем разумным количеством колонок
-      
-      for (let colNum = 1; colNum <= maxCols; colNum++) {
-        const cell = row.getCell(colNum);
-        let value = '';
-        
-        try {
-          if (cell.value !== null && cell.value !== undefined) {
-            if (typeof cell.value === 'object') {
-              if ('result' in cell.value) {
-                const res = cell.value.result;
-                value = res !== null && res !== undefined ? String(res) : '';
-              } else if ('text' in cell.value) {
-                value = String(cell.value.text);
-              } else if ('richText' in cell.value && Array.isArray(cell.value.richText)) {
-                value = cell.value.richText
-                  .map((rt: any) => (rt && rt.text) ? String(rt.text) : '')
-                  .join('');
-              } else if ('error' in cell.value) {
-                value = String(cell.value.error);
-              } else if (cell.value instanceof Date) {
-                value = cell.value.toISOString();
-              } else {
-                value = String(cell.value);
-              }
+import * as ExcelJs from "exceljs";
+import * as fs from "fs";
+
+/**
+ * Читает Excel в string[][]
+ * @param filePath путь к файлу .xlsx
+ * @param sheetName имя листа
+ * @param headers список заголовков (если есть – читаем только их, иначе все)
+ */
+export async function readExcelSheet(
+  filePath: string,
+  sheetName: string,
+  headers?: string[]
+): Promise<string[][]> {
+  return new Promise<string[][]>((resolve, reject) => {
+    const rows: string[][] = [];
+    let headerRow: string[] | null = null;
+    let headerMap: Record<string, number> = {};
+
+    // 🚀 Главное отличие: sharedStrings: 'emit'
+    const workbook = new ExcelJs.stream.xlsx.WorkbookReader(fs.createReadStream(filePath), {
+      entries: "emit",
+      sharedStrings: "emit", // ⚡ читаем строки потоком, не кэшируем
+      styles: "ignore",      // игнорируем стили (ускоряет и экономит память)
+      worksheets: "emit",
+    }) as unknown as NodeJS.EventEmitter;
+
+    (workbook as any).on("worksheet", (worksheet: any) => {
+      if (worksheet.name === sheetName) {
+        worksheet.on("row", (row: any) => {
+          const allValues: string[] = (row.values || [])
+            .slice(1)
+            .map((c: any) => (c != null ? String(c) : ""));
+
+          if (!headerRow) {
+            // первая строка — заголовки
+            headerRow = allValues;
+            headerRow.forEach((name, idx) => {
+              if (name) headerMap[name.trim()] = idx;
+            });
+
+            rows.push(headers && headers.length > 0 ? headers : headerRow);
+          } else {
+            let values: string[];
+            if (headers && headers.length > 0) {
+              values = headers.map((h) => {
+                const idx = headerMap[h];
+                return idx !== undefined ? allValues[idx] ?? "" : "";
+              });
             } else {
-              value = String(cell.value);
+              values = allValues;
             }
-            
-            // Ограничиваем длину строки
-            if (value.length > 10000) {
-              value = value.substring(0, 10000);
-            }
+            rows.push(values);
           }
-        } catch (err) {
-          value = '';
-        }
-        
-        rowData.push(value);
-      }
-      
-      // Добавляем строку во временный чанк
-      tempChunk.push(rowData);
-      processedRows++;
-      
-      // Когда накопили CHUNK_SIZE строк, переносим в основной результат
-      if (tempChunk.length >= CHUNK_SIZE) {
-        result.push(...tempChunk);
-        tempChunk = []; // Очищаем временный чанк
-        
-        if (processedRows % 5000 === 0) {
-          console.log(`Processed ${processedRows} rows...`);
-        }
+        });
       }
     });
-    
-    // Добавляем оставшиеся строки
-    if (tempChunk.length > 0) {
-      result.push(...tempChunk);
-    }
-    
-    console.log(`Completed: read ${processedRows} rows from "${sheetName}"`);
-    
-  } catch (error) {
-    throw new Error(`Error during reading: ${error instanceof Error ? error.message : 'Unknown error'}`);
-  }
-  
-  return result;
+
+    (workbook as any).on("end", () => resolve(rows));
+    (workbook as any).on("error", (err: any) => reject(err));
+  });
 }
