@@ -15,7 +15,7 @@ export class LargeExcelReader {
     const tempCsvPath = this.getTempCsvPath(filePath);
     
     try {
-      await this.streamExcelToCsv(filePath, sheetName, tempCsvPath);
+      await this.excelToCsvWithBatchProcessing(filePath, sheetName, tempCsvPath);
       const data = await this.readCsvToArray(tempCsvPath);
       return data;
     } finally {
@@ -24,74 +24,104 @@ export class LargeExcelReader {
   }
 
   /**
-   * Потоковая конвертация Excel в CSV
+   * Конвертация Excel в CSV с пакетной обработкой
    */
-  private async streamExcelToCsv(
+  private async excelToCsvWithBatchProcessing(
+    excelPath: string, 
+    sheetName: string, 
+    csvPath: string
+  ): Promise<void> {
+    const workbook = new ExcelJS.Workbook();
+    
+    // Читаем файл с оптимизацией для больших файлов
+    await workbook.xlsx.readFile(excelPath, {
+      ignoreNodes: ['style', 'hyperlink', 'format'],
+      maxRows: 0 // без ограничений
+    });
+    
+    const worksheet = workbook.getWorksheet(sheetName);
+    if (!worksheet) {
+      throw new Error(`Sheet '${sheetName}' not found`);
+    }
+
+    const csvStream = fs.createWriteStream(csvPath, { encoding: 'utf8' });
+    
+    // Обрабатываем строки порциями для экономии памяти
+    const batchSize = 500; // Можно настроить в зависимости от размера файла
+    const totalRows = worksheet.rowCount;
+    
+    for (let startRow = 1; startRow <= totalRows; startRow += batchSize) {
+      const endRow = Math.min(startRow + batchSize - 1, totalRows);
+      
+      for (let rowNum = startRow; rowNum <= endRow; rowNum++) {
+        const row = worksheet.getRow(rowNum);
+        if (row && row.values) {
+          const csvLine = this.convertRowToCsv(row.values as any[], rowNum === 1);
+          if (csvLine) {
+            csvStream.write(csvLine + '\n');
+          }
+        }
+        
+        // Освобождаем память после обработки строки
+        if (worksheet.getRow(rowNum)) {
+          worksheet.getRow(rowNum).commit();
+        }
+      }
+      
+      // Принудительный вызов сборщика мусора (если доступен)
+      if (global.gc) {
+        global.gc();
+      }
+    }
+    
+    csvStream.end();
+    
+    return new Promise((resolve, reject) => {
+      csvStream.on('finish', resolve);
+      csvStream.on('error', reject);
+    });
+  }
+
+  /**
+   * Альтернативный метод с использованием read вместо readFile
+   */
+  private async excelToCsvWithStream(
     excelPath: string, 
     sheetName: string, 
     csvPath: string
   ): Promise<void> {
     return new Promise((resolve, reject) => {
-      // Создаем WorkbookReader через stream
-      const workbook = new ExcelJS.stream.xlsx.WorkbookReader(excelPath, {
-        worksheets: 'emit',
-        sharedStrings: 'cache',
-        hyperlinks: 'ignore',
-        styles: 'ignore'
-      });
-
+      const workbook = new ExcelJS.Workbook();
       const csvStream = fs.createWriteStream(csvPath, { encoding: 'utf8' });
-      let targetSheetFound = false;
+      let headersWritten = false;
 
-      workbook.on('worksheet', (worksheet) => {
-        if (worksheet.name !== sheetName || targetSheetFound) {
-          worksheet.skip();
-          return;
-        }
-        
-        targetSheetFound = true;
-        let isFirstRow = true;
-
-        worksheet.on('row', (row) => {
-          try {
-            const rowValues = row.values as any[];
-            const csvLine = this.convertRowToCsv(rowValues, isFirstRow);
-            
-            if (csvLine) {
-              csvStream.write(csvLine + '\n');
-            }
-            
-            isFirstRow = false;
-          } catch (rowError) {
-            console.warn('Error processing row:', rowError);
+      const readStream = fs.createReadStream(excelPath);
+      
+      workbook.xlsx.read(readStream)
+        .then(() => {
+          const worksheet = workbook.getWorksheet(sheetName);
+          if (!worksheet) {
+            throw new Error(`Sheet '${sheetName}' not found`);
           }
-        });
 
-        worksheet.on('end', () => {
+          // Обрабатываем каждую строку
+          worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+            try {
+              const csvLine = this.convertRowToCsv(row.values as any[], rowNumber === 1);
+              if (csvLine) {
+                csvStream.write(csvLine + '\n');
+              }
+            } catch (error) {
+              console.warn(`Error processing row ${rowNumber}:`, error);
+            }
+          });
+
           csvStream.end();
-        });
-      });
+          resolve();
+        })
+        .catch(reject);
 
-      workbook.on('end', () => {
-        if (!targetSheetFound) {
-          csvStream.end();
-          reject(new Error(`Sheet '${sheetName}' not found in file`));
-          return;
-        }
-        resolve();
-      });
-
-      workbook.on('error', (error) => {
-        csvStream.end();
-        reject(error);
-      });
-
-      csvStream.on('error', (error) => {
-        reject(error);
-      });
-
-      // Запускаем чтение
-      workbook.read();
+      csvStream.on('error', reject);
     });
   }
 
@@ -212,24 +242,21 @@ export class LargeExcelReader {
     const result: string[] = [];
     let current = '';
     let inQuotes = false;
-    let quoteCount = 0;
 
     for (let i = 0; i < line.length; i++) {
       const char = line[i];
       const nextChar = line[i + 1];
 
       if (char === '"') {
-        quoteCount++;
         if (inQuotes && nextChar === '"') {
           current += '"';
-          i++;
+          i++; // Пропускаем следующую кавычку
         } else {
           inQuotes = !inQuotes;
         }
       } else if (char === ',' && !inQuotes) {
         result.push(current);
         current = '';
-        quoteCount = 0;
       } else {
         current += char;
       }
