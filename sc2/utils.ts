@@ -1,211 +1,194 @@
-import * as ExcelJS from 'exceljs';
+import * as XLSX from 'xlsx';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as readline from 'readline';
 
-export class SafeExcelReader {
+export class XLSXReader {
     
-    async readExcelToArray(
-        filePath: string,
-        sheetName: string,
-        columnsPerChunk: number = 50
-    ): Promise<string[][]> {
-        const tempCsvPath = this.getTempCsvPath(filePath);
+    /**
+     * Читает Excel файл и возвращает string[][]
+     * Самый надежный метод для больших файлов с 100+ колонками
+     */
+    async readExcelToArray(filePath: string, sheetName: string): Promise<string[][]> {
+        // Проверяем существование файла
+        if (!fs.existsSync(filePath)) {
+            throw new Error(`File not found: ${filePath}`);
+        }
+
+        console.log(`Reading Excel: ${filePath}, sheet: ${sheetName}`);
         
         try {
-            await this.readExcelWithBuffer(filePath, sheetName, tempCsvPath, columnsPerChunk);
-            const result = await this.readCsvToArray(tempCsvPath);
-            return result;
-        } finally {
-            this.cleanupTempFile(tempCsvPath);
+            const workbook = XLSX.readFile(filePath, {
+                // ✅ Критически важные опции для больших файлов
+                dense: true,        // Использует dense mode для экономии памяти
+                cellText: false,    // Не сохраняет форматирование текста
+                cellDates: true,    // Конвертирует даты в JS Date
+                sheetStubs: false,  // Не создает заглушки для отсутствующих листов
+                bookVBA: false,     // Игнорирует VBA макросы
+                password: null,     // Без пароля
+                WTF: false          // Не пытается восстанавливать битые файлы
+            });
+            
+            // Получаем все имена листов для отладки
+            const sheetNames = workbook.SheetNames;
+            console.log(`Available sheets: ${sheetNames.join(', ')}`);
+            
+            // Ищем нужный лист
+            const worksheet = workbook.Sheets[sheetName];
+            if (!worksheet) {
+                throw new Error(`Sheet '${sheetName}' not found. Available: ${sheetNames.join(', ')}`);
+            }
+            
+            // Конвертируем в массив массивов
+            const data = XLSX.utils.sheet_to_json(worksheet, {
+                header: 1,          // ✅ Массив массивов (не объектов)
+                defval: '',         // ✅ Пустые ячейки как пустые строки
+                raw: false,         // ✅ Конвертировать всё в строки
+                blankrows: true,    // ✅ Сохранять пустые строки
+                skipHidden: false   // ✅ Не пропускать скрытые строки/колонки
+            }) as string[][];
+            
+            console.log(`Successfully read ${data.length} rows`);
+            
+            // Очищаем данные от undefined/null
+            const cleanedData = this.cleanData(data);
+            
+            return cleanedData;
+            
+        } catch (error: any) {
+            console.error('XLSX reading failed:', error.message);
+            throw new Error(`Failed to read Excel file: ${error.message}`);
         }
     }
 
-    private async readExcelWithBuffer(
-        filePath: string,
+    /**
+     * Альтернативный метод с большим контролем над процессом
+     */
+    async readExcelToArrayAdvanced(
+        filePath: string, 
         sheetName: string,
-        csvPath: string,
-        columnsPerChunk: number
-    ): Promise<void> {
-        // Читаем файл как буфер
-        const fileBuffer = fs.readFileSync(filePath);
+        options: {
+            maxRows?: number;
+            maxColumns?: number;
+            skipEmptyRows?: boolean;
+        } = {}
+    ): Promise<string[][]> {
+        const { maxRows, maxColumns, skipEmptyRows = false } = options;
         
-        const workbook = new ExcelJS.Workbook();
+        const workbook = XLSX.readFile(filePath, {
+            dense: true,
+            cellText: false,
+            cellDates: true,
+            sheetRows: maxRows, // Ограничение количества строк если нужно
+        });
         
-        // Используем read вместо readFile с минимальными опциями
-        await workbook.xlsx.load(fileBuffer);
-        
-        const worksheet = workbook.getWorksheet(sheetName);
+        const worksheet = workbook.Sheets[sheetName];
         if (!worksheet) {
             throw new Error(`Sheet '${sheetName}' not found`);
         }
-
-        const totalRows = worksheet.rowCount;
-        const totalColumns = this.estimateColumnCount(worksheet);
         
-        console.log(`Processing ${totalRows} rows with ~${totalColumns} columns`);
+        // Получаем диапазон ячеек
+        const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
         
-        // Создаем CSV файл
-        fs.writeFileSync(csvPath, '');
-        const csvStream = fs.createWriteStream(csvPath, { flags: 'a', encoding: 'utf8' });
-
-        // Обрабатываем строки небольшими порциями
-        const rowBatchSize = 100;
+        const data: string[][] = [];
         
-        for (let startRow = 1; startRow <= totalRows; startRow += rowBatchSize) {
-            const endRow = Math.min(startRow + rowBatchSize - 1, totalRows);
+        // Проходим по строкам вручную для большего контроля
+        for (let R = range.s.r; R <= range.e.r; R++) {
+            // Останавливаемся если достигли maxRows
+            if (maxRows && R >= maxRows) break;
             
-            const batchData: string[][] = [];
+            const row: string[] = [];
+            let isEmptyRow = true;
             
-            for (let rowNum = startRow; rowNum <= endRow; rowNum++) {
-                const rowData = await this.readRowSafely(worksheet, rowNum, columnsPerChunk);
-                batchData.push(rowData);
-            }
-            
-            // Записываем порцию в CSV
-            this.writeBatchToCsv(csvStream, batchData);
-            
-            // Пауза для освобождения памяти
-            await this.delay(10);
-        }
-        
-        csvStream.end();
-        
-        return new Promise((resolve, reject) => {
-            csvStream.on('finish', resolve);
-            csvStream.on('error', reject);
-        });
-    }
-
-    private async readRowSafely(
-        worksheet: ExcelJS.Worksheet,
-        rowNum: number,
-        maxColumns: number
-    ): Promise<string[]> {
-        const rowData: string[] = [];
-        let columnsRead = 0;
-        
-        // Читаем ячейки до максимального количества колонок
-        for (let colNum = 1; colNum <= maxColumns; colNum++) {
-            try {
-                const cell = worksheet.getCell(rowNum, colNum);
+            for (let C = range.s.c; C <= range.e.c; C++) {
+                // Останавливаемся если достигли maxColumns
+                if (maxColumns && C >= maxColumns) break;
                 
-                // Проверяем, есть ли значение в ячейке
-                if (cell.value !== null && cell.value !== undefined) {
-                    const value = this.safeCellToString(cell.value);
-                    rowData.push(value);
-                } else {
-                    rowData.push('');
+                // Получаем адрес ячейки
+                const cellAddress = XLSX.utils.encode_cell({ r: R, c: C });
+                const cell = worksheet[cellAddress];
+                
+                let value = '';
+                if (cell) {
+                    value = this.cellToString(cell);
+                    if (value !== '') isEmptyRow = false;
                 }
                 
-                columnsRead++;
-                
-            } catch (error) {
-                // Если ячейка не существует, добавляем пустую строку
-                rowData.push('');
+                row.push(value);
             }
             
-            // Пауза каждые 10 колонок
-            if (colNum % 10 === 0) {
-                await this.delay(1);
+            // Пропускаем пустые строки если нужно
+            if (!skipEmptyRows || !isEmptyRow) {
+                data.push(row);
             }
         }
         
-        return rowData;
+        return data;
     }
 
-    private estimateColumnCount(worksheet: ExcelJS.Worksheet): number {
-        // Безопасно оцениваем количество колонок по первой строке
-        try {
-            const firstRow = worksheet.getRow(1);
-            return firstRow.actualCellCount || 100; // Дефолтное значение
-        } catch (error) {
-            return 100; // Дефолтное значение если не можем определить
-        }
-    }
-
-    private writeBatchToCsv(csvStream: fs.WriteStream, batchData: string[][]): void {
-        for (const row of batchData) {
-            const csvLine = row.map(cell => this.escapeCsvValue(cell)).join(',');
-            csvStream.write(csvLine + '\n');
-        }
-    }
-
-    private escapeCsvValue(value: string): string {
-        if (value === '') return '';
-        
-        if (value.includes(',') || value.includes('"') || value.includes('\n') || value.includes('\r')) {
-            return `"${value.replace(/"/g, '""')}"`;
+    /**
+     * Конвертирует значение ячейки в строку
+     */
+    private cellToString(cell: XLSX.CellObject): string {
+        if (cell.v === null || cell.v === undefined) {
+            return '';
         }
         
-        return value;
-    }
-
-    private safeCellToString(value: any): string {
-        if (value === null || value === undefined) return '';
-        
-        if (typeof value === 'object') {
-            if (value.formula && value.result !== undefined) {
-                return this.safeCellToString(value.result);
-            }
-            if (value.richText) {
-                return value.richText.map((text: any) => text.text || '').join('').substring(0, 1000);
-            }
-            try {
-                return String(value).substring(0, 1000);
-            } catch {
-                return '';
-            }
+        // Обрабатываем разные типы ячеек
+        if (cell.t === 's') { // string
+            return String(cell.v);
+        } else if (cell.t === 'n') { // number
+            return String(cell.v);
+        } else if (cell.t === 'b') { // boolean
+            return cell.v ? 'TRUE' : 'FALSE';
+        } else if (cell.t === 'd') { // date
+            return new Date(cell.v).toISOString();
+        } else if (cell.t === 'e') { // error
+            return '';
         }
         
-        return String(value).substring(0, 1000);
+        return String(cell.v);
     }
 
-    private async readCsvToArray(csvPath: string): Promise<string[][]> {
-        return new Promise((resolve, reject) => {
-            const result: string[][] = [];
-            
-            const readStream = fs.createReadStream(csvPath, { encoding: 'utf8' });
-            const rl = readline.createInterface({
-                input: readStream,
-                crlfDelay: Infinity
-            });
-
-            rl.on('line', (line) => {
-                if (line.trim()) {
-                    const row = line.split(',').map(cell => {
-                        // Упрощенный парсинг CSV
-                        if (cell.startsWith('"') && cell.endsWith('"')) {
-                            return cell.slice(1, -1).replace(/""/g, '"');
-                        }
-                        return cell;
-                    });
-                    result.push(row);
+    /**
+     * Очищает данные от undefined/null
+     */
+    private cleanData(data: string[][]): string[][] {
+        return data.map(row => 
+            row.map(cell => {
+                if (cell === null || cell === undefined) {
+                    return '';
                 }
-            });
-
-            rl.on('close', () => resolve(result));
-            rl.on('error', reject);
-        });
+                // Ограничиваем очень длинные строки для безопасности
+                const str = String(cell);
+                return str.length > 100000 ? str.substring(0, 100000) + '...' : str;
+            })
+        );
     }
 
-    private getTempCsvPath(originalPath: string): string {
-        const dir = path.dirname(originalPath);
-        const name = path.basename(originalPath, path.extname(originalPath));
-        return path.join(dir, `${name}_temp_${Date.now()}.csv`);
+    /**
+     * Вспомогательный метод: получить список всех листов
+     */
+    getSheetNames(filePath: string): string[] {
+        const workbook = XLSX.readFile(filePath, { dense: true });
+        return workbook.SheetNames;
     }
 
-    private cleanupTempFile(filePath: string): void {
-        try {
-            if (fs.existsSync(filePath)) {
-                fs.unlinkSync(filePath);
-            }
-        } catch (error) {
-            console.warn('Could not delete temp file:', filePath);
+    /**
+     * Вспомогательный метод: получить информацию о файле
+     */
+    getFileInfo(filePath: string, sheetName: string): { rows: number; columns: number } {
+        const workbook = XLSX.readFile(filePath, { dense: true });
+        const worksheet = workbook.Sheets[sheetName];
+        
+        if (!worksheet) {
+            throw new Error(`Sheet '${sheetName}' not found`);
         }
-    }
-
-    private delay(ms: number): Promise<void> {
-        return new Promise(resolve => setTimeout(resolve, ms));
+        
+        const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as string[][];
+        
+        return {
+            rows: data.length,
+            columns: data[0]?.length || 0
+        };
     }
 }
