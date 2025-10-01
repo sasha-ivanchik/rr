@@ -1,13 +1,11 @@
 import * as ExcelJs from "exceljs";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import * as readline from "readline";
 
 /**
  * Читает Excel и возвращает string[][]
- * Для больших файлов сначала пишет во временный CSV, потом читает его
- * Только стандартные библиотеки + ExcelJS
+ * Временный CSV создаётся рядом с исходным Excel
  * 
  * @param filePath путь к Excel
  * @param sheetName имя листа
@@ -18,8 +16,9 @@ export async function readExcelSheet(
   sheetName: string,
   headers?: string[]
 ): Promise<string[][]> {
-  // создаем временный файл
-  const tmpFile = path.join(os.tmpdir(), `exceljs_tmp_${Date.now()}.csv`);
+  // создаём временный CSV рядом с исходным файлом
+  const dir = path.dirname(filePath);
+  const tmpFile = path.join(dir, `${path.basename(filePath, path.extname(filePath))}_tmp_${Date.now()}.csv`);
   const tmpStream = fs.createWriteStream(tmpFile, { encoding: "utf8" });
 
   let headerRow: string[] | null = null;
@@ -27,12 +26,12 @@ export async function readExcelSheet(
 
   const workbook = new ExcelJs.stream.xlsx.WorkbookReader(fs.createReadStream(filePath), {
     entries: "emit",
-    sharedStrings: "emit", // потоковое чтение строк
-    styles: "ignore",      // игнорируем стили
+    sharedStrings: "emit",
+    styles: "ignore",
     worksheets: "emit",
   }) as unknown as NodeJS.EventEmitter;
 
-  // записываем построчно во временный CSV
+  // потоковое чтение Excel → запись в CSV
   await new Promise<void>((resolve, reject) => {
     (workbook as any).on("worksheet", (worksheet: any) => {
       if (worksheet.name !== sheetName) return;
@@ -43,7 +42,6 @@ export async function readExcelSheet(
           .map((c: any) => (c != null ? String(c) : ""));
 
         if (!headerRow) {
-          // первая строка — заголовки
           headerRow = allValues;
           headerRow.forEach((name, idx) => {
             if (name) headerMap[name.trim()] = idx;
@@ -78,14 +76,13 @@ export async function readExcelSheet(
   });
 
   for await (const line of rl) {
-    // простая CSV-разборка: кавычки и запятые
     const values = line.match(/("([^"]|"")*"|[^,]*)/g)?.map((v) =>
       v.startsWith('"') ? v.slice(1, -1).replace(/""/g, '"') : v
     ) ?? [];
     result.push(values);
   }
 
-  // удаляем временный файл
+  // удаляем временный CSV
   fs.unlinkSync(tmpFile);
 
   return result;
