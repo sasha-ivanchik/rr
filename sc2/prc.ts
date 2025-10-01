@@ -1,71 +1,26 @@
 import * as ExcelJS from 'exceljs';
 import * as fs from 'fs';
-import * as csv from 'fast-csv';
 import * as path from 'path';
+import * as readline from 'readline';
 
 export class LargeExcelReader {
   
   /**
-   * Чтение больших Excel файлов с защитой от Invalid String Length
+   * Чтение больших Excel файлов с возвратом string[][]
    */
   async readExcelToArray(
     filePath: string, 
     sheetName: string
   ): Promise<string[][]> {
-    try {
-      // Пробуем прямое чтение для небольших файлов
-      return await this.readDirect(filePath, sheetName);
-    } catch (error: any) {
-      if (error.message?.includes('Invalid string length') || 
-          error.message?.includes('Buffer allocation failed')) {
-        // Для больших файлов используем потоковое чтение через CSV
-        return await this.readViaStreaming(filePath, sheetName);
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Прямое чтение для небольших файлов
-   */
-  private async readDirect(filePath: string, sheetName: string): Promise<string[][]> {
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.readFile(filePath);
-    
-    const worksheet = workbook.getWorksheet(sheetName);
-    if (!worksheet) {
-      throw new Error(`Sheet '${sheetName}' not found`);
-    }
-
-    const result: string[][] = [];
-    
-    worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-      const rowData: string[] = [];
-      
-      row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-        // Безопасное преобразование значения в строку
-        const value = this.safeToString(cell.value);
-        rowData.push(value);
-      });
-      
-      result.push(rowData);
-    });
-
-    return result;
-  }
-
-  /**
-   * Потоковое чтение для больших файлов через временный CSV
-   */
-  private async readViaStreaming(filePath: string, sheetName: string): Promise<string[][]> {
+    // Создаем временный CSV файл
     const tempCsvPath = this.getTempCsvPath(filePath);
     
     try {
       // Конвертируем Excel в CSV потоковым способом
       await this.streamExcelToCsv(filePath, sheetName, tempCsvPath);
       
-      // Читаем CSV файл
-      const data = await this.readCsvFile(tempCsvPath);
+      // Читаем CSV файл построчно
+      const data = await this.readCsvToArray(tempCsvPath);
       
       return data;
     } finally {
@@ -87,13 +42,11 @@ export class LargeExcelReader {
         worksheets: 'emit',
         sharedStrings: 'cache',
         hyperlinks: 'ignore',
-        styles: 'ignore',
-        entries: 'ignore'
+        styles: 'ignore'
       });
 
-      const csvStream = fs.createWriteStream(csvPath);
+      const csvStream = fs.createWriteStream(csvPath, { encoding: 'utf8' });
       let targetSheetFound = false;
-      let isFirstRow = true;
 
       workbookReader.on('worksheet', (worksheet: ExcelJS.stream.xlsx.WorksheetStreamReader) => {
         if (worksheet.name !== sheetName || targetSheetFound) {
@@ -102,19 +55,21 @@ export class LargeExcelReader {
         }
         
         targetSheetFound = true;
+        let isFirstRow = true;
 
         worksheet.on('row', (row: ExcelJS.Row) => {
           try {
             const rowValues = row.values as any[];
-            const csvRow = this.formatRowForCsv(rowValues, isFirstRow);
+            const csvLine = this.convertRowToCsv(rowValues, isFirstRow);
             
-            if (csvRow) {
-              csvStream.write(csvRow + '\n');
+            if (csvLine) {
+              csvStream.write(csvLine + '\n');
             }
             
             isFirstRow = false;
           } catch (rowError) {
             console.warn('Error processing row:', rowError);
+            // Продолжаем обработку следующих строк
           }
         });
 
@@ -125,63 +80,61 @@ export class LargeExcelReader {
 
       workbookReader.on('end', () => {
         if (!targetSheetFound) {
-          reject(new Error(`Sheet '${sheetName}' not found`));
+          csvStream.end();
+          reject(new Error(`Sheet '${sheetName}' not found in file`));
           return;
         }
         resolve();
       });
 
-      workbookReader.on('error', reject);
-      csvStream.on('error', reject);
+      workbookReader.on('error', (error) => {
+        csvStream.end();
+        reject(error);
+      });
+
+      csvStream.on('error', (error) => {
+        reject(error);
+      });
 
       workbookReader.read();
     });
   }
 
   /**
-   * Чтение CSV файла
+   * Конвертация строки Excel в CSV формат
    */
-  private async readCsvFile(csvPath: string): Promise<string[][]> {
-    return new Promise((resolve, reject) => {
-      const data: string[][] = [];
-      
-      fs.createReadStream(csvPath)
-        .pipe(csv.parse({ 
-          headers: false,
-          skipEmptyLines: true,
-          trim: true
-        }))
-        .on('data', (row: string[]) => {
-          data.push(row);
-        })
-        .on('end', () => {
-          resolve(data);
-        })
-        .on('error', reject);
-    });
+  private convertRowToCsv(rowValues: any[], isFirstRow: boolean): string {
+    if (!rowValues || rowValues.length === 0) {
+      return '';
+    }
+
+    // Пропускаем первый элемент (обычно это номер строки в exceljs)
+    const values = rowValues.slice(1);
+    
+    const csvCells: string[] = [];
+    
+    for (const value of values) {
+      const stringValue = this.safeToString(value);
+      csvCells.push(this.escapeCsvValue(stringValue));
+    }
+    
+    return csvCells.join(',');
   }
 
   /**
-   * Форматирование строки для CSV
+   * Экранирование значения для CSV
    */
-  private formatRowForCsv(rowValues: any[], isFirstRow: boolean): string {
-    if (!rowValues || rowValues.length === 0) return '';
+  private escapeCsvValue(value: string): string {
+    if (value === '') {
+      return '';
+    }
     
-    // Пропускаем первый элемент (обычно это номер строки)
-    const values = rowValues.slice(1);
+    // Если значение содержит запятые, кавычки или переносы строк - экранируем
+    if (value.includes(',') || value.includes('"') || value.includes('\n') || value.includes('\r')) {
+      return `"${value.replace(/"/g, '""')}"`;
+    }
     
-    return values
-      .map(value => {
-        const strValue = this.safeToString(value);
-        
-        // Экранирование для CSV
-        if (strValue.includes(',') || strValue.includes('"') || strValue.includes('\n')) {
-          return `"${strValue.replace(/"/g, '""')}"`;
-        }
-        
-        return strValue;
-      })
-      .join(',');
+    return value;
   }
 
   /**
@@ -197,14 +150,105 @@ export class LargeExcelReader {
     }
     
     if (typeof value === 'object') {
+      // Для формул берем результат
+      if (value.formula) {
+        return this.safeToString(value.result);
+      }
+      
+      // Для богатого текста
+      if (value.richText) {
+        return value.richText.map((text: any) => text.text).join('');
+      }
+      
       try {
-        return JSON.stringify(value);
-      } catch {
         return String(value);
+      } catch {
+        return '';
       }
     }
     
     return String(value);
+  }
+
+  /**
+   * Чтение CSV файла в массив строк
+   */
+  private async readCsvToArray(csvPath: string): Promise<string[][]> {
+    return new Promise((resolve, reject) => {
+      const result: string[][] = [];
+      
+      const readStream = fs.createReadStream(csvPath, { encoding: 'utf8' });
+      const rl = readline.createInterface({
+        input: readStream,
+        crlfDelay: Infinity // Поддержка всех вариантов переноса строк
+      });
+
+      rl.on('line', (line) => {
+        if (line.trim() === '') {
+          return; // Пропускаем пустые строки
+        }
+        
+        try {
+          const row = this.parseCsvLine(line);
+          result.push(row);
+        } catch (error) {
+          console.warn('Error parsing CSV line:', line, error);
+          // Добавляем пустую строку вместо проблемной
+          result.push([]);
+        }
+      });
+
+      rl.on('close', () => {
+        resolve(result);
+      });
+
+      rl.on('error', (error) => {
+        reject(error);
+      });
+
+      readStream.on('error', (error) => {
+        reject(error);
+      });
+    });
+  }
+
+  /**
+   * Парсинг CSV строки
+   */
+  private parseCsvLine(line: string): string[] {
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    let quoteCount = 0;
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      const nextChar = line[i + 1];
+
+      if (char === '"') {
+        quoteCount++;
+        if (inQuotes && nextChar === '"') {
+          // Удвоенная кавычка внутри кавычек
+          current += '"';
+          i++; // Пропускаем следующую кавычку
+        } else {
+          // Начало/конец кавычек
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        // Конец ячейки
+        result.push(current);
+        current = '';
+        quoteCount = 0;
+      } else {
+        current += char;
+      }
+    }
+
+    // Добавляем последнюю ячейку
+    result.push(current);
+
+    return result;
   }
 
   /**
