@@ -12,19 +12,13 @@ export class LargeExcelReader {
     filePath: string, 
     sheetName: string
   ): Promise<string[][]> {
-    // Создаем временный CSV файл
     const tempCsvPath = this.getTempCsvPath(filePath);
     
     try {
-      // Конвертируем Excel в CSV потоковым способом
       await this.streamExcelToCsv(filePath, sheetName, tempCsvPath);
-      
-      // Читаем CSV файл построчно
       const data = await this.readCsvToArray(tempCsvPath);
-      
       return data;
     } finally {
-      // Всегда очищаем временный файл
       this.cleanupTempFile(tempCsvPath);
     }
   }
@@ -38,7 +32,8 @@ export class LargeExcelReader {
     csvPath: string
   ): Promise<void> {
     return new Promise((resolve, reject) => {
-      const workbookReader = new ExcelJS.stream.xlsx.WorkbookReader(excelPath, {
+      // Создаем WorkbookReader через stream
+      const workbook = new ExcelJS.stream.xlsx.WorkbookReader(excelPath, {
         worksheets: 'emit',
         sharedStrings: 'cache',
         hyperlinks: 'ignore',
@@ -48,7 +43,7 @@ export class LargeExcelReader {
       const csvStream = fs.createWriteStream(csvPath, { encoding: 'utf8' });
       let targetSheetFound = false;
 
-      workbookReader.on('worksheet', (worksheet: ExcelJS.stream.xlsx.WorksheetStreamReader) => {
+      workbook.on('worksheet', (worksheet) => {
         if (worksheet.name !== sheetName || targetSheetFound) {
           worksheet.skip();
           return;
@@ -57,7 +52,7 @@ export class LargeExcelReader {
         targetSheetFound = true;
         let isFirstRow = true;
 
-        worksheet.on('row', (row: ExcelJS.Row) => {
+        worksheet.on('row', (row) => {
           try {
             const rowValues = row.values as any[];
             const csvLine = this.convertRowToCsv(rowValues, isFirstRow);
@@ -69,7 +64,6 @@ export class LargeExcelReader {
             isFirstRow = false;
           } catch (rowError) {
             console.warn('Error processing row:', rowError);
-            // Продолжаем обработку следующих строк
           }
         });
 
@@ -78,7 +72,7 @@ export class LargeExcelReader {
         });
       });
 
-      workbookReader.on('end', () => {
+      workbook.on('end', () => {
         if (!targetSheetFound) {
           csvStream.end();
           reject(new Error(`Sheet '${sheetName}' not found in file`));
@@ -87,7 +81,7 @@ export class LargeExcelReader {
         resolve();
       });
 
-      workbookReader.on('error', (error) => {
+      workbook.on('error', (error) => {
         csvStream.end();
         reject(error);
       });
@@ -96,7 +90,8 @@ export class LargeExcelReader {
         reject(error);
       });
 
-      workbookReader.read();
+      // Запускаем чтение
+      workbook.read();
     });
   }
 
@@ -129,7 +124,6 @@ export class LargeExcelReader {
       return '';
     }
     
-    // Если значение содержит запятые, кавычки или переносы строк - экранируем
     if (value.includes(',') || value.includes('"') || value.includes('\n') || value.includes('\r')) {
       return `"${value.replace(/"/g, '""')}"`;
     }
@@ -180,12 +174,12 @@ export class LargeExcelReader {
       const readStream = fs.createReadStream(csvPath, { encoding: 'utf8' });
       const rl = readline.createInterface({
         input: readStream,
-        crlfDelay: Infinity // Поддержка всех вариантов переноса строк
+        crlfDelay: Infinity
       });
 
       rl.on('line', (line) => {
         if (line.trim() === '') {
-          return; // Пропускаем пустые строки
+          return;
         }
         
         try {
@@ -193,7 +187,6 @@ export class LargeExcelReader {
           result.push(row);
         } catch (error) {
           console.warn('Error parsing CSV line:', line, error);
-          // Добавляем пустую строку вместо проблемной
           result.push([]);
         }
       });
@@ -228,15 +221,12 @@ export class LargeExcelReader {
       if (char === '"') {
         quoteCount++;
         if (inQuotes && nextChar === '"') {
-          // Удвоенная кавычка внутри кавычек
           current += '"';
-          i++; // Пропускаем следующую кавычку
+          i++;
         } else {
-          // Начало/конец кавычек
           inQuotes = !inQuotes;
         }
       } else if (char === ',' && !inQuotes) {
-        // Конец ячейки
         result.push(current);
         current = '';
         quoteCount = 0;
@@ -245,9 +235,7 @@ export class LargeExcelReader {
       }
     }
 
-    // Добавляем последнюю ячейку
     result.push(current);
-
     return result;
   }
 
