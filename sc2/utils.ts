@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
 
-export class ChunkedExcelToCsvReader {
+export class SafeExcelReader {
     
     async readExcelToArray(
         filePath: string,
@@ -13,65 +13,60 @@ export class ChunkedExcelToCsvReader {
         const tempCsvPath = this.getTempCsvPath(filePath);
         
         try {
-            // Читаем Excel и записываем в CSV по частям
-            await this.readAndWriteByChunks(filePath, sheetName, tempCsvPath, columnsPerChunk);
-            
-            // Читаем готовый CSV и возвращаем как string[][]
+            await this.readExcelWithBuffer(filePath, sheetName, tempCsvPath, columnsPerChunk);
             const result = await this.readCsvToArray(tempCsvPath);
             return result;
-            
         } finally {
             this.cleanupTempFile(tempCsvPath);
         }
     }
 
-    private async readAndWriteByChunks(
+    private async readExcelWithBuffer(
         filePath: string,
         sheetName: string,
         csvPath: string,
         columnsPerChunk: number
     ): Promise<void> {
+        // Читаем файл как буфер
+        const fileBuffer = fs.readFileSync(filePath);
+        
         const workbook = new ExcelJS.Workbook();
         
-        await workbook.xlsx.readFile(filePath, {
-            ignoreNodes: ['style', 'hyperlink', 'format', 'drawing'],
-            worksheets: 'emit'
-        });
+        // Используем read вместо readFile с минимальными опциями
+        await workbook.xlsx.load(fileBuffer);
         
         const worksheet = workbook.getWorksheet(sheetName);
         if (!worksheet) {
             throw new Error(`Sheet '${sheetName}' not found`);
         }
 
-        // Определяем общее количество колонок
-        const totalColumns = this.getMaxColumnCount(worksheet);
         const totalRows = worksheet.rowCount;
+        const totalColumns = this.estimateColumnCount(worksheet);
         
-        console.log(`Processing ${totalRows} rows with ${totalColumns} columns in chunks of ${columnsPerChunk}`);
+        console.log(`Processing ${totalRows} rows with ~${totalColumns} columns`);
         
-        // Создаем или очищаем CSV файл
+        // Создаем CSV файл
         fs.writeFileSync(csvPath, '');
         const csvStream = fs.createWriteStream(csvPath, { flags: 'a', encoding: 'utf8' });
 
-        // Обрабатываем колонки чанками
-        for (let startCol = 1; startCol <= totalColumns; startCol += columnsPerChunk) {
-            const endCol = Math.min(startCol + columnsPerChunk - 1, totalColumns);
-            console.log(`Reading columns ${startCol} to ${endCol}`);
+        // Обрабатываем строки небольшими порциями
+        const rowBatchSize = 100;
+        
+        for (let startRow = 1; startRow <= totalRows; startRow += rowBatchSize) {
+            const endRow = Math.min(startRow + rowBatchSize - 1, totalRows);
             
-            // Читаем чанк колонок
-            const chunkData = await this.readColumnChunk(worksheet, startCol, endCol, totalRows);
+            const batchData: string[][] = [];
             
-            // Записываем в CSV
-            if (startCol === 1) {
-                // Первый чанк - записываем все строки
-                this.writeChunkToCsv(csvStream, chunkData);
-            } else {
-                // Последующие чанки - дописываем к существующим строкам
-                await this.appendChunkToCsv(csvPath, chunkData);
+            for (let rowNum = startRow; rowNum <= endRow; rowNum++) {
+                const rowData = await this.readRowSafely(worksheet, rowNum, columnsPerChunk);
+                batchData.push(rowData);
             }
             
-            // Пауза между чанками
-            await this.delay(50);
+            // Записываем порцию в CSV
+            this.writeBatchToCsv(csvStream, batchData);
+            
+            // Пауза для освобождения памяти
+            await this.delay(10);
         }
         
         csvStream.end();
@@ -82,84 +77,88 @@ export class ChunkedExcelToCsvReader {
         });
     }
 
-    private async readColumnChunk(
+    private async readRowSafely(
         worksheet: ExcelJS.Worksheet,
-        startCol: number,
-        endCol: number,
-        totalRows: number
-    ): Promise<string[][]> {
-        const chunkData: string[][] = [];
+        rowNum: number,
+        maxColumns: number
+    ): Promise<string[]> {
+        const rowData: string[] = [];
+        let columnsRead = 0;
         
-        for (let rowNum = 1; rowNum <= totalRows; rowNum++) {
-            const rowData: string[] = [];
-            
-            for (let colNum = startCol; colNum <= endCol; colNum++) {
-                try {
-                    const cell = worksheet.getCell(rowNum, colNum);
+        // Читаем ячейки до максимального количества колонок
+        for (let colNum = 1; colNum <= maxColumns; colNum++) {
+            try {
+                const cell = worksheet.getCell(rowNum, colNum);
+                
+                // Проверяем, есть ли значение в ячейке
+                if (cell.value !== null && cell.value !== undefined) {
                     const value = this.safeCellToString(cell.value);
                     rowData.push(value);
-                } catch (error) {
+                } else {
                     rowData.push('');
                 }
+                
+                columnsRead++;
+                
+            } catch (error) {
+                // Если ячейка не существует, добавляем пустую строку
+                rowData.push('');
             }
             
-            chunkData.push(rowData);
-            
-            // Пауза каждые 100 строк
-            if (rowNum % 100 === 0) {
+            // Пауза каждые 10 колонок
+            if (colNum % 10 === 0) {
                 await this.delay(1);
             }
         }
         
-        return chunkData;
+        return rowData;
     }
 
-    private writeChunkToCsv(csvStream: fs.WriteStream, chunkData: string[][]): void {
-        for (const row of chunkData) {
+    private estimateColumnCount(worksheet: ExcelJS.Worksheet): number {
+        // Безопасно оцениваем количество колонок по первой строке
+        try {
+            const firstRow = worksheet.getRow(1);
+            return firstRow.actualCellCount || 100; // Дефолтное значение
+        } catch (error) {
+            return 100; // Дефолтное значение если не можем определить
+        }
+    }
+
+    private writeBatchToCsv(csvStream: fs.WriteStream, batchData: string[][]): void {
+        for (const row of batchData) {
             const csvLine = row.map(cell => this.escapeCsvValue(cell)).join(',');
             csvStream.write(csvLine + '\n');
         }
     }
 
-    private async appendChunkToCsv(csvPath: string, chunkData: string[][]): Promise<void> {
-        // Читаем существующий CSV
-        const existingLines = await this.readCsvLines(csvPath);
+    private escapeCsvValue(value: string): string {
+        if (value === '') return '';
         
-        // Объединяем с новыми данными
-        const mergedLines: string[] = [];
-        
-        for (let i = 0; i < Math.max(existingLines.length, chunkData.length); i++) {
-            const existingCells = existingLines[i] ? existingLines[i].split(',') : [];
-            const newCells = chunkData[i] || [];
-            
-            const mergedCells = [...existingCells, ...newCells.map(cell => this.escapeCsvValue(cell))];
-            mergedLines.push(mergedCells.join(','));
+        if (value.includes(',') || value.includes('"') || value.includes('\n') || value.includes('\r')) {
+            return `"${value.replace(/"/g, '""')}"`;
         }
         
-        // Перезаписываем файл с объединенными данными
-        fs.writeFileSync(csvPath, mergedLines.join('\n'));
+        return value;
     }
 
-    private async readCsvLines(csvPath: string): Promise<string[]> {
-        return new Promise((resolve, reject) => {
-            const lines: string[] = [];
-            
-            const readStream = fs.createReadStream(csvPath, { encoding: 'utf8' });
-            const rl = readline.createInterface({
-                input: readStream,
-                crlfDelay: Infinity
-            });
-
-            rl.on('line', (line) => {
-                lines.push(line);
-            });
-
-            rl.on('close', () => {
-                resolve(lines);
-            });
-
-            rl.on('error', reject);
-        });
+    private safeCellToString(value: any): string {
+        if (value === null || value === undefined) return '';
+        
+        if (typeof value === 'object') {
+            if (value.formula && value.result !== undefined) {
+                return this.safeCellToString(value.result);
+            }
+            if (value.richText) {
+                return value.richText.map((text: any) => text.text || '').join('').substring(0, 1000);
+            }
+            try {
+                return String(value).substring(0, 1000);
+            } catch {
+                return '';
+            }
+        }
+        
+        return String(value).substring(0, 1000);
     }
 
     private async readCsvToArray(csvPath: string): Promise<string[][]> {
@@ -174,104 +173,20 @@ export class ChunkedExcelToCsvReader {
 
             rl.on('line', (line) => {
                 if (line.trim()) {
-                    // Парсим CSV строку обратно в массив
-                    const row = this.parseCsvLine(line);
+                    const row = line.split(',').map(cell => {
+                        // Упрощенный парсинг CSV
+                        if (cell.startsWith('"') && cell.endsWith('"')) {
+                            return cell.slice(1, -1).replace(/""/g, '"');
+                        }
+                        return cell;
+                    });
                     result.push(row);
                 }
             });
 
-            rl.on('close', () => {
-                resolve(result);
-            });
-
+            rl.on('close', () => resolve(result));
             rl.on('error', reject);
         });
-    }
-
-    private escapeCsvValue(value: string): string {
-        if (value === '') return '';
-        
-        if (value.includes(',') || value.includes('"') || value.includes('\n') || value.includes('\r')) {
-            return `"${value.replace(/"/g, '""')}"`;
-        }
-        
-        return value;
-    }
-
-    private parseCsvLine(line: string): string[] {
-        const result: string[] = [];
-        let current = '';
-        let inQuotes = false;
-
-        for (let i = 0; i < line.length; i++) {
-            const char = line[i];
-            const nextChar = i + 1 < line.length ? line[i + 1] : null;
-
-            if (char === '"') {
-                if (inQuotes && nextChar === '"') {
-                    current += '"';
-                    i++;
-                } else {
-                    inQuotes = !inQuotes;
-                }
-            } else if (char === ',' && !inQuotes) {
-                result.push(current);
-                current = '';
-            } else {
-                current += char;
-            }
-        }
-
-        result.push(current);
-        return result;
-    }
-
-    private getMaxColumnCount(worksheet: ExcelJS.Worksheet): number {
-        let maxColumns = 0;
-        const sampleRows = Math.min(worksheet.rowCount, 10); // Проверяем первые 10 строк
-        
-        for (let rowNum = 1; rowNum <= sampleRows; rowNum++) {
-            try {
-                const row = worksheet.getRow(rowNum);
-                if (row.actualCellCount > maxColumns) {
-                    maxColumns = row.actualCellCount;
-                }
-            } catch (error) {
-                // Пропускаем проблемные строки
-            }
-        }
-        
-        return Math.max(maxColumns, 1);
-    }
-
-    private safeCellToString(value: any): string {
-        if (value === null || value === undefined) {
-            return '';
-        }
-        
-        if (typeof value === 'object') {
-            if (value.formula && value.result !== undefined) {
-                return this.safeCellToString(value.result);
-            }
-            
-            if (value.richText) {
-                return value.richText.map((text: any) => text.text || '').join('');
-            }
-            
-            if (value.text !== undefined) {
-                return String(value.text);
-            }
-            
-            try {
-                return String(value);
-            } catch {
-                return '';
-            }
-        }
-        
-        const str = String(value);
-        // Ограничиваем очень длинные строки
-        return str.length > 10000 ? str.substring(0, 10000) + '...' : str;
     }
 
     private getTempCsvPath(originalPath: string): string {
