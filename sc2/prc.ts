@@ -1,42 +1,35 @@
-export enum LogLevel {
-  ERROR = 0,
-  WARN = 1,
-  INFO = 2,
-  DEBUG = 3,
-}
+import Excel from "exceljs";
+import * as fs from "fs";
 
-export class Logger {
-  private currentLevel: LogLevel;
+export async function readExcelSheet(filePath: string, sheetName: string): Promise<string[][]> {
+  return new Promise<string[][]>((resolve, reject) => {
+    const rows: string[][] = [];
+    const workbook = new Excel.stream.xlsx.WorkbookReader(fs.createReadStream(filePath), {
+      entries: "emit",       // события по каждому entry (sheet, sharedStrings и т.д.)
+      sharedStrings: "cache",
+      styles: "cache",
+      worksheets: "emit",    // читать только листы
+    });
 
-  constructor(level: LogLevel = LogLevel.INFO) {
-    this.currentLevel = level;
-  }
+    workbook.on("worksheet", (worksheet) => {
+      if (worksheet.name === sheetName) {
+        worksheet.on("row", (row) => {
+          // row.values[0] — это undefined, т.к. exceljs делает 1-based массив
+          const values = row.values
+            .slice(1) // убираем первый undefined
+            .map((cell) => (cell != null ? String(cell) : "")); // приводим всё к string
 
-  setLevel(level: LogLevel) {
-    this.currentLevel = level;
-  }
+          rows.push(values);
+        });
+      }
+    });
 
-  error(message: string, ...args: unknown[]) {
-    if (this.currentLevel >= LogLevel.ERROR) {
-      console.error(`[ERROR] ${message}`, ...args);
-    }
-  }
+    workbook.on("end", () => {
+      resolve(rows);
+    });
 
-  warn(message: string, ...args: unknown[]) {
-    if (this.currentLevel >= LogLevel.WARN) {
-      console.warn(`[WARN] ${message}`, ...args);
-    }
-  }
-
-  info(message: string, ...args: unknown[]) {
-    if (this.currentLevel >= LogLevel.INFO) {
-      console.log(`[INFO] ${message}`, ...args);
-    }
-  }
-
-  debug(message: string, ...args: unknown[]) {
-    if (this.currentLevel >= LogLevel.DEBUG) {
-      console.debug(`[DEBUG] ${message}`, ...args);
-    }
-  }
+    workbook.on("error", (err) => {
+      reject(err);
+    });
+  });
 }
