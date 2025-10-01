@@ -4,34 +4,38 @@ import * as path from "path";
 import * as readline from "readline";
 
 /**
- * Читает Excel и возвращает string[][]
- * Временный CSV создаётся рядом с исходным Excel
- * 
- * @param filePath путь к Excel
+ * Читает Excel и возвращает string[][] через временный CSV
+ *
+ * @param filePath путь к Excel-файлу
  * @param sheetName имя листа
- * @param headers список заголовков (если задан – читаем только эти колонки)
+ * @param headers список колонок (если есть — читаем только их)
  */
 export async function readExcelSheet(
   filePath: string,
   sheetName: string,
   headers?: string[]
 ): Promise<string[][]> {
-  // создаём временный CSV рядом с исходным файлом
   const dir = path.dirname(filePath);
-  const tmpFile = path.join(dir, `${path.basename(filePath, path.extname(filePath))}_tmp_${Date.now()}.csv`);
+  const tmpFile = path.join(
+    dir,
+    `${path.basename(filePath, path.extname(filePath))}_tmp_${Date.now()}.csv`
+  );
   const tmpStream = fs.createWriteStream(tmpFile, { encoding: "utf8" });
 
   let headerRow: string[] | null = null;
   let headerMap: Record<string, number> = {};
 
-  const workbook = new ExcelJs.stream.xlsx.WorkbookReader(fs.createReadStream(filePath), {
-    entries: "emit",
-    sharedStrings: "emit",
-    styles: "ignore",
-    worksheets: "emit",
-  }) as unknown as NodeJS.EventEmitter;
+  const workbook = new ExcelJs.stream.xlsx.WorkbookReader(
+    fs.createReadStream(filePath),
+    {
+      entries: "emit",
+      sharedStrings: "emit",
+      styles: "ignore",
+      worksheets: "emit",
+    }
+  ) as unknown as NodeJS.EventEmitter;
 
-  // потоковое чтение Excel → запись в CSV
+  // Потоковое чтение Excel → запись в CSV
   await new Promise<void>((resolve, reject) => {
     (workbook as any).on("worksheet", (worksheet: any) => {
       if (worksheet.name !== sheetName) return;
@@ -48,14 +52,17 @@ export async function readExcelSheet(
           });
 
           const outputHeader = headers && headers.length > 0 ? headers : headerRow;
-          tmpStream.write(outputHeader.map((v) => `"${v.replace(/"/g, '""')}"`).join(",") + "\n");
+          tmpStream.write(
+            outputHeader.map((v) => `"${v.replace(/"/g, '""')}"`).join(",") + "\n"
+          );
         } else {
-          const values = headers && headers.length > 0
-            ? headers.map((h) => {
-                const idx = headerMap[h];
-                return idx !== undefined ? allValues[idx] ?? "" : "";
-              })
-            : allValues;
+          const values =
+            headers && headers.length > 0
+              ? headers.map((h) => {
+                  const idx = headerMap[h];
+                  return idx !== undefined ? allValues[idx] ?? "" : "";
+                })
+              : allValues;
 
           tmpStream.write(values.map((v) => `"${v.replace(/"/g, '""')}"`).join(",") + "\n");
         }
@@ -68,7 +75,7 @@ export async function readExcelSheet(
 
   tmpStream.end();
 
-  // читаем CSV обратно в string[][]
+  // Чтение CSV обратно в string[][]
   const result: string[][] = [];
   const rl = readline.createInterface({
     input: fs.createReadStream(tmpFile, { encoding: "utf8" }),
@@ -82,7 +89,7 @@ export async function readExcelSheet(
     result.push(values);
   }
 
-  // удаляем временный CSV
+  // Удаляем временный CSV
   fs.unlinkSync(tmpFile);
 
   return result;
