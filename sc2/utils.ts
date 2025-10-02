@@ -1,74 +1,49 @@
+import * as fs from "fs/promises";
+import * as path from "path";
 import * as XLSX from "xlsx";
-import * as fs from "fs";
 
 /**
- * Asynchronously reads an Excel sheet into a 2D string array.
+ * Reads an Excel file safely (including OpenFin Excel files)
+ * and returns string[][]. Uses a temporary CSV next to the original file.
  *
- * @param filePath - Path to the Excel file (.xlsx / .xls / .csv)
- * @param sheetName - Optional sheet name. If not provided, the first sheet will be used.
- * @returns Promise<string[][]>
+ * @param excelPath - Path to the Excel file
+ * @param sheetName - Optional sheet name. If missing, first sheet is used.
  */
-export async function readExcelAsArrays(
-  filePath: string,
-  sheetName?: string
-): Promise<string[][]> {
-  return new Promise((resolve, reject) => {
-    try {
-      if (!fs.existsSync(filePath)) {
-        reject(new Error(`File not found: ${filePath}`));
-        return;
-      }
+export async function readExcelSafe(excelPath: string, sheetName?: string): Promise<string[][]> {
+  const dir = path.dirname(excelPath);
+  const base = path.basename(excelPath, path.extname(excelPath));
+  const tmpCsvPath = path.join(dir, `${base}_tmp.csv`);
 
-      const workbook = XLSX.readFile(filePath, { cellDates: false });
+  try {
+    // Load workbook
+    const workbook = XLSX.readFile(excelPath, { cellDates: false });
 
-      const allSheets = workbook.SheetNames;
-      if (allSheets.length === 0) {
-        reject(new Error("No sheets found in the file"));
-        return;
-      }
+    // Determine sheet
+    let targetSheet = sheetName && workbook.SheetNames.includes(sheetName)
+      ? sheetName
+      : workbook.SheetNames[0];
 
-      let targetName: string | undefined;
+    if (!targetSheet) return [];
 
-      if (sheetName) {
-        // Try exact match
-        targetName = allSheets.find((name) => name === sheetName);
+    const worksheet = workbook.Sheets[targetSheet];
+    if (!worksheet || !worksheet["!ref"]) return [];
 
-        // Try case-insensitive and trimmed match
-        if (!targetName) {
-          targetName = allSheets.find(
-            (name) =>
-              name.trim().toLowerCase() === sheetName.trim().toLowerCase()
-          );
-        }
+    // Convert to CSV temporarily
+    XLSX.writeFile({ Sheets: { [targetSheet]: worksheet }, SheetNames: [targetSheet] }, tmpCsvPath, { bookType: "csv" });
 
-        if (!targetName) {
-          reject(
-            new Error(
-              `Sheet "${sheetName}" not found. Available sheets: ${allSheets.join(", ")}`
-            )
-          );
-          return;
-        }
-      } else {
-        // Use the first sheet if no name is provided
-        targetName = allSheets[0];
-      }
+    // Read CSV as string[][] line by line
+    const csvContent = await fs.readFile(tmpCsvPath, "utf-8");
+    const rows = csvContent
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map(line => line.split(",").map(cell => cell.trim()));
 
-      const sheet = workbook.Sheets[targetName];
-
-      const rows: any[][] = XLSX.utils.sheet_to_json(sheet, {
-        header: 1,   // return rows as arrays
-        defval: "",  // default empty cells to ""
-        raw: false   // convert everything to strings
-      });
-
-      const result: string[][] = rows.map((row) =>
-        row.map((cell) => String(cell ?? ""))
-      );
-
-      resolve(result);
-    } catch (err) {
-      reject(err);
-    }
-  });
+    return rows;
+  } catch (err) {
+    console.error("Error reading Excel:", err);
+    return [];
+  } finally {
+    // Cleanup temporary CSV
+    await fs.unlink(tmpCsvPath).catch(() => {});
+  }
 }
