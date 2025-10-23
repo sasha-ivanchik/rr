@@ -1,16 +1,23 @@
 import { Page } from '@playwright/test';
 import Tesseract from 'tesseract.js';
 
+// ===== Типы =====
 export interface TableStructure {
   [rowIndex: number]: { [colIndex: number]: string };
 }
+
 export interface AllTables {
   [tableIndex: number]: TableStructure;
 }
 
 // ===== Хелпер: группировка слов по строкам =====
-function groupWordsByRows(words: any[], yTolerance = 15) {
-  const rows: Record<number, any[]> = {};
+function groupWordsByRows(words: {
+  text: string;
+  bbox: { x0: number; y0: number; x1: number; y1: number };
+}[], yTolerance = 15) {
+  const rows: Record<number, typeof words> = {};
+
+  // Сортируем слова по вертикали
   for (const word of words.sort((a, b) => a.bbox.y0 - b.bbox.y0)) {
     const y = word.bbox.y0;
     const existingRow = Object.keys(rows).find(
@@ -20,6 +27,8 @@ function groupWordsByRows(words: any[], yTolerance = 15) {
     if (existingRow) rows[existingRow].push(word);
     else rows[y] = [word];
   }
+
+  // Сортируем слова по горизонтали в каждой строке
   return Object.values(rows).map((r) => r.sort((a, b) => a.bbox.x0 - b.bbox.x0));
 }
 
@@ -28,13 +37,7 @@ export async function extractStructuredTablesFromCanvas(page: Page): Promise<All
   const result: AllTables = {};
   const canvases = await page.locator('canvas');
   const count = await canvases.count();
-
   if (count === 0) return result;
-
-  // Получаем размеры viewport
-  const viewport = page.viewportSize();
-  if (!viewport) throw new Error('Viewport size not available');
-  const { width: vw, height: vh } = viewport;
 
   for (let i = 0; i < count; i++) {
     const canvas = canvases.nth(i);
@@ -45,10 +48,16 @@ export async function extractStructuredTablesFromCanvas(page: Page): Promise<All
     if (!box) continue;
     const { width, height } = box;
 
-    // Вычисляем масштаб, если canvas больше viewport
+    // Получаем текущий размер окна
+    const { width: vw, height: vh } = await page.evaluate(() => ({
+      width: window.innerWidth,
+      height: window.innerHeight,
+    }));
+
+    // Вычисляем масштаб
     const zoomOut = Math.min(1, vw / width, vh / height);
 
-    // Устанавливаем zoom через CSS
+    // Применяем zoom, если нужно
     if (zoomOut < 1) {
       await page.evaluate((scale) => {
         document.body.style.transformOrigin = '0 0';
@@ -72,13 +81,17 @@ export async function extractStructuredTablesFromCanvas(page: Page): Promise<All
       logger: (info) => console.log(`[Canvas ${i}] ${info.status}`),
     });
 
-    const words = data.words || [];
+    // Используем только data.words и приводим тип
+    const words = (data.words ?? []) as {
+      text: string;
+      bbox: { x0: number; y0: number; x1: number; y1: number };
+    }[];
     if (!words.length) continue;
 
     // Группировка по строкам
     const rows = groupWordsByRows(words);
 
-    // Преобразуем в словарь словарей
+    // Преобразуем строки в словарь словарей
     const table: TableStructure = {};
     rows.forEach((rowWords, rowIndex) => {
       const rowData: Record<number, string> = {};
