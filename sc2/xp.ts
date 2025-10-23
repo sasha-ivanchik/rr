@@ -29,12 +29,19 @@ function groupWordsByRows(words: {
   return Object.values(rows).map((r) => r.sort((a, b) => a.bbox.x0 - b.bbox.x0));
 }
 
-// ===== Основная функция с логами =====
-export async function extractStructuredTablesFromCanvas(page: Page): Promise<AllTables> {
+// ===== Основная функция =====
+export async function extractStructuredTablesFromCanvas(
+  page: Page,
+  canvasClass?: string // опциональный класс для фильтрации
+): Promise<AllTables> {
   const result: AllTables = {};
-  const canvases = await page.locator('canvas');
+
+  const selector = canvasClass ? `canvas.${canvasClass}` : 'canvas';
+  console.log(`🔹 Using selector: "${selector}"`);
+
+  const canvases = await page.locator(selector);
   const count = await canvases.count();
-  console.log(`🔹 Found ${count} canvas element(s) on the page`);
+  console.log(`🔹 Found ${count} canvas element(s) matching selector`);
 
   if (count === 0) return result;
 
@@ -43,7 +50,6 @@ export async function extractStructuredTablesFromCanvas(page: Page): Promise<All
     const canvas = canvases.nth(i);
     await canvas.scrollIntoViewIfNeeded();
 
-    // Получаем размеры canvas
     const box = await canvas.boundingBox();
     if (!box) {
       console.log(`⚠️ Canvas #${i} bounding box not found`);
@@ -52,14 +58,12 @@ export async function extractStructuredTablesFromCanvas(page: Page): Promise<All
     const { width, height } = box;
     console.log(`Canvas #${i} size: width=${width}, height=${height}`);
 
-    // Получаем размер окна через evaluate
     const { width: vw, height: vh } = await page.evaluate(() => ({
       width: window.innerWidth,
       height: window.innerHeight,
     }));
     console.log(`Viewport size: width=${vw}, height=${vh}`);
 
-    // Вычисляем масштаб
     const zoomOut = Math.min(1, vw / width, vh / height);
     console.log(`Calculated zoom scale: ${zoomOut}`);
 
@@ -90,15 +94,12 @@ export async function extractStructuredTablesFromCanvas(page: Page): Promise<All
       text: string;
       bbox: { x0: number; y0: number; x1: number; y1: number };
     }[];
-
     console.log(`Canvas #${i} OCR found ${words.length} words`);
     if (!words.length) continue;
 
-    // Группировка по строкам
     const rows = groupWordsByRows(words);
     console.log(`Canvas #${i} grouped into ${rows.length} row(s)`);
 
-    // Формируем словарь словарей
     const table: TableStructure = {};
     rows.forEach((rowWords, rowIndex) => {
       const rowData: Record<number, string> = {};
