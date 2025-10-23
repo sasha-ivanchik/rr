@@ -1,7 +1,6 @@
 import { Page } from '@playwright/test';
 import Tesseract from 'tesseract.js';
 
-// ===== Типы =====
 export interface TableStructure {
   [rowIndex: number]: { [colIndex: number]: string };
 }
@@ -10,14 +9,13 @@ export interface AllTables {
   [tableIndex: number]: TableStructure;
 }
 
-// ===== Хелпер: группировка слов по строкам =====
+// ===== Группировка слов по строкам =====
 function groupWordsByRows(words: {
   text: string;
   bbox: { x0: number; y0: number; x1: number; y1: number };
 }[], yTolerance = 15) {
   const rows: Record<number, typeof words> = {};
 
-  // Сортируем слова по вертикали
   for (const word of words.sort((a, b) => a.bbox.y0 - b.bbox.y0)) {
     const y = word.bbox.y0;
     const existingRow = Object.keys(rows).find(
@@ -28,81 +26,93 @@ function groupWordsByRows(words: {
     else rows[y] = [word];
   }
 
-  // Сортируем слова по горизонтали в каждой строке
   return Object.values(rows).map((r) => r.sort((a, b) => a.bbox.x0 - b.bbox.x0));
 }
 
-// ===== Основная функция =====
+// ===== Основная функция с логами =====
 export async function extractStructuredTablesFromCanvas(page: Page): Promise<AllTables> {
   const result: AllTables = {};
   const canvases = await page.locator('canvas');
   const count = await canvases.count();
+  console.log(`🔹 Found ${count} canvas element(s) on the page`);
+
   if (count === 0) return result;
 
   for (let i = 0; i < count; i++) {
+    console.log(`\n--- Processing canvas #${i} ---`);
     const canvas = canvases.nth(i);
     await canvas.scrollIntoViewIfNeeded();
 
     // Получаем размеры canvas
     const box = await canvas.boundingBox();
-    if (!box) continue;
+    if (!box) {
+      console.log(`⚠️ Canvas #${i} bounding box not found`);
+      continue;
+    }
     const { width, height } = box;
+    console.log(`Canvas #${i} size: width=${width}, height=${height}`);
 
-    // Получаем текущий размер окна
+    // Получаем размер окна через evaluate
     const { width: vw, height: vh } = await page.evaluate(() => ({
       width: window.innerWidth,
       height: window.innerHeight,
     }));
+    console.log(`Viewport size: width=${vw}, height=${vh}`);
 
     // Вычисляем масштаб
     const zoomOut = Math.min(1, vw / width, vh / height);
+    console.log(`Calculated zoom scale: ${zoomOut}`);
 
-    // Применяем zoom, если нужно
     if (zoomOut < 1) {
+      console.log(`Applying zoom ${zoomOut} to fit canvas #${i}`);
       await page.evaluate((scale) => {
         document.body.style.transformOrigin = '0 0';
         document.body.style.transform = `scale(${scale})`;
       }, zoomOut);
-      await page.waitForTimeout(100); // ждем рендер после зума
+      await page.waitForTimeout(100);
     }
 
-    // Скриншот canvas
+    console.log(`📸 Taking screenshot of canvas #${i}`);
     const buffer = await canvas.screenshot();
 
-    // Возвращаем масштаб обратно
     if (zoomOut < 1) {
       await page.evaluate(() => {
         document.body.style.transform = '';
       });
     }
 
-    // OCR
+    console.log(`🧠 Running OCR on canvas #${i}...`);
     const { data } = await Tesseract.recognize(buffer, 'eng', {
-      logger: (info) => console.log(`[Canvas ${i}] ${info.status}`),
+      logger: (info) => console.log(`[Canvas ${i} OCR] ${info.status}: ${info.progress?.toFixed(2)}`),
     });
 
-    // Используем только data.words и приводим тип
     const words = (data.words ?? []) as {
       text: string;
       bbox: { x0: number; y0: number; x1: number; y1: number };
     }[];
+
+    console.log(`Canvas #${i} OCR found ${words.length} words`);
     if (!words.length) continue;
 
     // Группировка по строкам
     const rows = groupWordsByRows(words);
+    console.log(`Canvas #${i} grouped into ${rows.length} row(s)`);
 
-    // Преобразуем строки в словарь словарей
+    // Формируем словарь словарей
     const table: TableStructure = {};
     rows.forEach((rowWords, rowIndex) => {
       const rowData: Record<number, string> = {};
       rowWords.forEach((w, colIndex) => {
         rowData[colIndex] = w.text.trim();
       });
+      console.log(`Row ${rowIndex}:`, rowData);
       table[rowIndex] = rowData;
     });
 
     result[i] = table;
+    console.log(`✅ Finished canvas #${i}`);
   }
 
+  console.log(`\n🔹 Finished processing all canvas elements`);
   return result;
 }
