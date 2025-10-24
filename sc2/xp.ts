@@ -47,27 +47,22 @@ export async function extractStructuredTablesFromCanvas(
     const testWidth = Math.min(1200, Math.round(box.width * 1.5));
     const testHeight = Math.min(900, Math.round(box.height * 1.5));
 
-    await page.evaluate(
-      (sel, w, h) => {
-        const el = document.querySelector(sel) as HTMLCanvasElement;
-        if (el) {
-          (el as any).__originalStyle = el.getAttribute('style') || '';
-          el.style.width = `${w}px`;
-          el.style.height = `${h}px`;
-        }
-      },
-      selector,
-      testWidth,
-      testHeight
-    );
+    await page.evaluate(({ sel, w, h }) => {
+      const el = document.querySelector(sel) as HTMLCanvasElement;
+      if (el) {
+        (el as any).__originalStyle = el.getAttribute('style') || '';
+        el.style.width = `${w}px`;
+        el.style.height = `${h}px`;
+      }
+    }, { sel: selector, w: testWidth, h: testHeight });
     console.log(`🧪 Применён тестовый размер: ${testWidth}x${testHeight}`);
 
     // 🔹 Zoom In
     const zoom = 2.0;
-    await page.evaluate((scale) => {
+    await page.evaluate(({ scale }) => {
       document.body.style.transformOrigin = '0 0';
       document.body.style.transform = `scale(${scale})`;
-    }, zoom);
+    }, { scale: zoom });
     console.log(`🔍 Применён зум: ${zoom}`);
 
     await page.waitForTimeout(500);
@@ -85,12 +80,12 @@ export async function extractStructuredTablesFromCanvas(
     });
 
     // 🔹 Возврат оригинального стиля
-    await page.evaluate((sel) => {
+    await page.evaluate(({ sel }) => {
       const el = document.querySelector(sel) as HTMLCanvasElement;
       if (el && (el as any).__originalStyle !== undefined) {
         el.setAttribute('style', (el as any).__originalStyle);
       }
-    }, selector);
+    }, { sel: selector });
 
     // 🔹 OCR
     console.log(`🧠 OCR через Tesseract...`);
