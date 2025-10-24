@@ -1,6 +1,4 @@
 import { Page } from '@playwright/test';
-import Tesseract from 'tesseract.js';
-import fs from 'fs';
 
 export interface TableStructure {
   [rowIndex: number]: { [colIndex: number]: string };
@@ -10,10 +8,7 @@ export interface AllTables {
   [tableIndex: number]: TableStructure;
 }
 
-export async function extractStructuredTablesFromCanvas(
-  page: Page,
-  canvasClass?: string
-): Promise<AllTables> {
+export async function extractStructuredTablesFromCanvas(page: Page, canvasClass?: string): Promise<AllTables> {
   const result: AllTables = {};
   const selector = canvasClass ? `canvas.${canvasClass}` : 'canvas';
   console.log(`🔹 Используется селектор: "${selector}"`);
@@ -35,75 +30,40 @@ export async function extractStructuredTablesFromCanvas(
     return result;
   }
 
-  // 🧩 Работаем с первым видимым
-  const { canvas, index: i, box } = visibleCanvases[0];
-  console.log(`\n🧩 Тест: canvas #${i}, размер: ${Math.round(box.width)}x${Math.round(box.height)}`);
+  // 🔹 Работаем с каждым видимым канвасом
+  for (const { canvas, index: i } of visibleCanvases) {
+    console.log(`\n🧩 Обработка canvas #${i}`);
 
-  try {
-    // 🔹 Увеличиваем сам канвас, а не body
-    const zoom = 2.0;
-    console.log(`🔍 Применяем зум: ${zoom} и фильтры контраста`);
+    try {
+      // 🔹 Перехватываем fillText на странице
+      const texts: string[] = await page.evaluate(() => {
+        const captured: string[] = [];
+        const originalFillText = CanvasRenderingContext2D.prototype.fillText;
+        CanvasRenderingContext2D.prototype.fillText = function (text: string, x: number, y: number, ...args: any[]) {
+          captured.push(text);
+          return originalFillText.apply(this, [text, x, y, ...args]);
+        };
+        return captured;
+      });
 
-    await page.evaluate(
-      ({ sel, scale }) => {
-        const el = document.querySelector(sel) as HTMLElement;
-        if (el) {
-          (el as any).__originalStyle = {
-            transform: el.style.transform,
-            transformOrigin: el.style.transformOrigin,
-            filter: el.style.filter,
-          };
-          el.style.transformOrigin = '0 0';
-          el.style.transform = `scale(${scale})`;
-          el.style.filter = 'contrast(180%) brightness(120%) grayscale(100%)';
-        }
-      },
-      { sel: selector, scale: zoom }
-    );
-
-    await page.waitForTimeout(800);
-
-    // 🔹 Скриншот
-    const screenshotPath = `./canvas_test_${Date.now()}.png`;
-    console.log(`📸 Делаем скриншот → ${screenshotPath}`);
-    const buffer = await canvas.screenshot();
-    fs.writeFileSync(screenshotPath, buffer);
-    console.log(`💾 Скриншот сохранён: ${screenshotPath}`);
-
-    // 🔹 Сброс трансформаций и фильтров
-    await page.evaluate(({ sel }) => {
-      const el = document.querySelector(sel) as HTMLElement;
-      if (el && (el as any).__originalStyle) {
-        const s = (el as any).__originalStyle;
-        el.style.transform = s.transform;
-        el.style.transformOrigin = s.transformOrigin;
-        el.style.filter = s.filter;
+      console.log(`🔠 Canvas #${i} перехватил ${texts.length} текстов`);
+      if (!texts.length) {
+        console.warn('⚠️ Текст не был перехвачен. Возможно, WebGL.');
       }
-    }, { sel: selector });
 
-    // 🔹 OCR
-    console.log(`🧠 OCR через Tesseract...`);
-    const { data } = await Tesseract.recognize(screenshotPath, 'eng', {
-      langPath: './tessdata',
-      logger: (info) => {
-        if (info.status)
-          console.log(`[OCR] ${info.status}: ${(info.progress * 100).toFixed(1)}%`);
-      },
-    });
+      // 🔹 Формируем структуру
+      const table: TableStructure = {};
+      texts.forEach((text, idx) => {
+        table[idx] = { 0: text }; // можно доработать по колонкам/строкам
+      });
 
-    const words = (data.words ?? []).filter((w) => w.text?.trim());
-    console.log(`🔠 OCR нашёл ${words.length} слов`);
-
-    if (!words.length) {
-      console.warn('⚠️ Текст не распознан');
-    } else {
-      console.log('🧾 Пример слов:', words.slice(0, 10).map((w) => w.text));
+      result[i] = table;
+      console.log(`✅ Canvas #${i} готов, текста: ${texts.length}`);
+    } catch (err) {
+      console.error(`❌ Ошибка при обработке canvas #${i}:`, err);
     }
-
-    console.log('🏁 Готово');
-    return result;
-  } catch (err) {
-    console.error(`❌ Ошибка при обработке canvas #${i}:`, err);
-    return result;
   }
+
+  console.log('🏁 Все канвасы обработаны');
+  return result;
 }
