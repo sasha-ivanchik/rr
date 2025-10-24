@@ -31,35 +31,28 @@ function groupWordsByRows(
   return grouped;
 }
 
-/** Основная функция с zoom-in через viewport */
+/** Основная функция с zoom-in через Ctrl + "+" */
 export async function extractStructuredTablesFromCanvas(
   page: Page,
-  zoomFactor = 2 // коэффициент увеличения
+  zoomTimes = 2 // количество нажатий Ctrl + "+"
 ): Promise<AllTables> {
   const result: AllTables = {};
 
   try {
-    // 1️⃣ Узнаём текущий размер viewport
-    const viewport = page.viewportSize() || { width: 1280, height: 720 };
-    console.log(`🔹 Текущий viewport: ${viewport.width}x${viewport.height}`);
+    console.log(`🔍 Применяем zoom-in страницы (${zoomTimes} нажатий Ctrl + "+")...`);
+    for (let i = 0; i < zoomTimes; i++) {
+      await page.keyboard.down('Control');
+      await page.keyboard.press('+');
+      await page.keyboard.up('Control');
+      await page.waitForTimeout(200); // ждём применения zoom
+    }
 
-    // 2️⃣ Устанавливаем увеличенный viewport
-    const zoomWidth = Math.round(viewport.width / zoomFactor);
-    const zoomHeight = Math.round(viewport.height / zoomFactor);
-    console.log(`🔍 Устанавливаем zoom-in viewport: ${zoomWidth}x${zoomHeight}`);
-    await page.setViewportSize({ width: zoomWidth, height: zoomHeight });
-    await page.waitForTimeout(200);
-
-    // 3️⃣ Скриншот всей страницы
+    console.log('📸 Делаем скриншот всей страницы...');
     const screenshotPath = path.resolve(process.cwd(), 'page_screenshot.png');
     const buffer = await page.screenshot({ path: screenshotPath, fullPage: true });
-    console.log(`📸 Скриншот сохранён: ${screenshotPath}, размер: ${buffer.length} байт`);
+    console.log(`✅ Скриншот сохранён: ${screenshotPath}, размер: ${buffer.length} байт`);
 
-    // 4️⃣ Восстанавливаем исходный viewport
-    await page.setViewportSize(viewport);
-
-    // 5️⃣ OCR через Tesseract.js
-    console.log('🧠 Запуск OCR через Tesseract.js...');
+    console.log('🧠 Запуск OCR через Tesseract.js (локальная модель)...');
     const { data } = await Tesseract.recognize(buffer, 'eng', {
       langPath: path.resolve(process.cwd(), 'tessdata'),
       gzip: false,
