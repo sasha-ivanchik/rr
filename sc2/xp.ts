@@ -1,6 +1,7 @@
 import { Page } from '@playwright/test';
 import Tesseract from 'tesseract.js';
 import path from 'path';
+import fs from 'fs';
 
 export interface TableStructure {
   [rowIndex: number]: { [colIndex: number]: string };
@@ -32,62 +33,42 @@ function groupWordsByRows(
 
 /** Основная функция */
 export async function extractStructuredTablesFromCanvas(
-  page: Page,
-  canvasSelector: string
+  page: Page
 ): Promise<AllTables> {
   const result: AllTables = {};
 
-  console.log(`🔹 Поиск canvas: "${canvasSelector}"`);
-  const canvas = await page.$(canvasSelector);
-  if (!canvas) {
-    console.error('❌ Canvas не найден');
-    return result;
+  try {
+    console.log('📸 Делаем скриншот всей страницы...');
+    const screenshotPath = path.resolve(process.cwd(), 'page_screenshot.png');
+    const buffer = await page.screenshot({ path: screenshotPath, fullPage: true });
+    console.log(`✅ Скриншот сохранён: ${screenshotPath}, размер: ${buffer.length} байт`);
+
+    console.log('🧠 Запуск OCR через Tesseract.js (локальная модель)...');
+    const { data } = await Tesseract.recognize(buffer, 'eng', {
+      langPath: path.resolve(process.cwd(), 'tessdata'), // локальная папка с eng.traineddata
+      gzip: false,
+      logger: (info) => console.log(`[OCR] ${info.status}: ${info.progress?.toFixed(2)}`),
+    });
+
+    const words = (data.words ?? []).filter((w) => w.text?.trim());
+    console.log(`🔠 OCR распознал ${words.length} слов`);
+
+    if (!words.length) return result;
+
+    const rows = groupWordsByRows(words);
+    const table: TableStructure = {};
+
+    rows.forEach((rowWords, rowIndex) => {
+      const rowData: Record<number, string> = {};
+      rowWords.forEach((w, colIndex) => (rowData[colIndex] = w.text.trim()));
+      table[rowIndex] = rowData;
+    });
+
+    result[0] = table;
+    console.log('✅ Таблица сформирована успешно');
+  } catch (err) {
+    console.error('❌ Ошибка в extractStructuredTablesFromCanvas:', err);
   }
-
-  // Получаем размеры canvas напрямую через JS
-  const contentBox = await page.evaluate((sel) => {
-    const c = document.querySelector(sel) as HTMLCanvasElement;
-    if (!c) return null;
-    return { width: c.width, height: c.height };
-  }, canvasSelector);
-
-  if (!contentBox) {
-    console.error('❌ Не удалось получить размеры canvas');
-    return result;
-  }
-
-  if (contentBox.width < 10 || contentBox.height < 10) {
-    console.warn('⚠️ Canvas слишком мал для OCR, пропускаем');
-    return result;
-  }
-
-  console.log(`📏 Canvas size: width=${contentBox.width}, height=${contentBox.height}`);
-
-  console.log('📸 Скриншот всего canvas...');
-  const buffer = await canvas.screenshot();
-
-  console.log('🧠 Запуск OCR через Tesseract.js (локальная модель)...');
-  const { data } = await Tesseract.recognize(buffer, 'eng', {
-    langPath: path.resolve(process.cwd(), 'tessdata'), // папка с eng.traineddata
-    logger: (info) => console.log(`[OCR] ${info.status}: ${info.progress?.toFixed(2)}`),
-  });
-
-  const words = (data.words ?? []).filter((w) => w.text?.trim());
-  console.log(`🔠 OCR распознал ${words.length} слов`);
-
-  if (!words.length) return result;
-
-  const rows = groupWordsByRows(words);
-
-  const table: TableStructure = {};
-  rows.forEach((rowWords, rowIndex) => {
-    const rowData: Record<number, string> = {};
-    rowWords.forEach((w, colIndex) => (rowData[colIndex] = w.text.trim()));
-    table[rowIndex] = rowData;
-  });
-
-  result[0] = table;
-  console.log('✅ Таблица сформирована успешно');
 
   return result;
 }
