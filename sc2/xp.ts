@@ -1,6 +1,38 @@
+import { Page } from '@playwright/test';
+import Tesseract from 'tesseract.js';
+import path from 'path';
+
+export interface TableStructure {
+  [rowIndex: number]: { [colIndex: number]: string };
+}
+
+export interface AllTables {
+  [tableIndex: number]: TableStructure;
+}
+
+function groupWordsByRows(
+  words: { text: string; bbox: { x0: number; y0: number; x1: number; y1: number } }[],
+  yTolerance = 15
+) {
+  console.log(`📊 Группировка ${words.length} слов по строкам...`);
+  const rows: Record<number, typeof words> = {};
+
+  for (const word of words.sort((a, b) => a.bbox.y0 - b.bbox.y0)) {
+    const y = word.bbox.y0;
+    const existingRow = Object.keys(rows).find((k) => Math.abs(Number(k) - y) < yTolerance);
+    if (existingRow) rows[existingRow].push(word);
+    else rows[y] = [word];
+  }
+
+  const grouped = Object.values(rows).map((r) => r.sort((a, b) => a.bbox.x0 - b.bbox.x0));
+  console.log(`✅ Получено ${grouped.length} строк после группировки`);
+  return grouped;
+}
+
 export async function extractStructuredTablesFromCanvas(
   page: Page,
-  zoomScale = 2 // во сколько раз увеличить
+  zoomScale = 2,
+  screenshotName = 'page_screenshot.png'
 ): Promise<AllTables> {
   const result: AllTables = {};
 
@@ -11,19 +43,16 @@ export async function extractStructuredTablesFromCanvas(
       document.body.style.transform = `scale(${scale})`;
     }, zoomScale);
 
-    await page.waitForTimeout(300); // ждём применения трансформации
+    // Ждём, чтобы браузер успел отрисовать увеличенное содержимое
+    await page.waitForTimeout(500); 
 
     console.log('📸 Делаем скриншот всей страницы...');
-    const screenshotPath = path.resolve(process.cwd(), 'page_screenshot.png');
+    const screenshotPath = path.resolve(process.cwd(), screenshotName);
     const buffer = await page.screenshot({ path: screenshotPath, fullPage: true });
     console.log(`✅ Скриншот сохранён: ${screenshotPath}, размер: ${buffer.length} байт`);
 
-    // сброс transform
-    await page.evaluate(() => {
-      document.body.style.transform = '';
-    });
-
-    console.log('🧠 Запуск OCR...');
+    // OCR
+    console.log('🧠 Запуск OCR через Tesseract.js...');
     const { data } = await Tesseract.recognize(buffer, 'eng', {
       langPath: path.resolve(process.cwd(), 'tessdata'),
       gzip: false,
@@ -37,7 +66,6 @@ export async function extractStructuredTablesFromCanvas(
 
     const rows = groupWordsByRows(words);
     const table: TableStructure = {};
-
     rows.forEach((rowWords, rowIndex) => {
       const rowData: Record<number, string> = {};
       rowWords.forEach((w, colIndex) => (rowData[colIndex] = w.text.trim()));
@@ -46,6 +74,12 @@ export async function extractStructuredTablesFromCanvas(
 
     result[0] = table;
     console.log('✅ Таблица сформирована успешно');
+
+    // Сброс transform после скриншота и OCR
+    await page.evaluate(() => {
+      document.body.style.transform = '';
+    });
+
   } catch (err) {
     console.error('❌ Ошибка в extractStructuredTablesFromCanvas:', err);
   }
