@@ -38,9 +38,10 @@ export async function extractStructuredTablesFromCanvas(
   console.log(`\n🧩 Canvas #${i}, исходный размер: ${Math.round(box.width)}x${Math.round(box.height)}`);
 
   try {
-    const scale = 2; // увеличиваем канвас в 2 раза
-    const newWidth = Math.round(box.width * scale);
-    const newHeight = Math.round(box.height * scale);
+    // 🔹 Увеличение канваса (чтобы OCR лучше видел)
+    const scaleCanvas = 2;
+    const newWidth = Math.round(box.width * scaleCanvas);
+    const newHeight = Math.round(box.height * scaleCanvas);
 
     await page.evaluate(
       ({ sel, w, h }) => {
@@ -53,16 +54,30 @@ export async function extractStructuredTablesFromCanvas(
       },
       { sel: selector, w: newWidth, h: newHeight }
     );
+    console.log(`🧪 Применён масштаб канваса x${scaleCanvas} → ${newWidth}x${newHeight}`);
 
-    await page.waitForTimeout(300);
+    // 🔹 Zoom In всей страницы (для увеличения текста)
+    const zoomPage = 2; // попробуй увеличить до 2x
+    await page.evaluate(({ scale }) => {
+      document.body.style.transformOrigin = '0 0';
+      document.body.style.transform = `scale(${scale})`;
+    }, { scale: zoomPage });
+    console.log(`🔍 Применён zoom страницы x${zoomPage}`);
 
-    // Скриншот увеличенного канваса
+    await page.waitForTimeout(500); // небольшая пауза для отрисовки
+
+    // 🔹 Скриншот канваса
     const screenshotPath = `./canvas_test_${Date.now()}.png`;
-    console.log(`📸 Скриншот увеличенного канваса → ${screenshotPath}`);
+    console.log(`📸 Делаем скриншот → ${screenshotPath}`);
     const buffer = await canvas.screenshot();
     fs.writeFileSync(screenshotPath, buffer);
 
-    // Восстанавливаем оригинальные размеры
+    // 🔹 Сброс zoom страницы
+    await page.evaluate(() => {
+      document.body.style.transform = '';
+    });
+
+    // 🔹 Восстановление исходного размера канваса
     await page.evaluate(({ sel }) => {
       const el = document.querySelector(sel) as HTMLCanvasElement;
       if (el && (el as any).__originalSize) {
@@ -71,7 +86,7 @@ export async function extractStructuredTablesFromCanvas(
       }
     }, { sel: selector });
 
-    // OCR
+    // 🔹 OCR
     console.log(`🧠 OCR через Tesseract...`);
     const { data } = await Tesseract.recognize(screenshotPath, 'eng', {
       langPath: './tessdata',
@@ -87,7 +102,6 @@ export async function extractStructuredTablesFromCanvas(
     if (!words.length) console.warn('⚠️ Текст не распознан');
     else console.log('🧾 Пример слов:', words.slice(0, 10).map((w) => w.text));
 
-    // Можно здесь добавить разбиение на строки и колонки
     return result;
   } catch (err) {
     console.error(`❌ Ошибка при обработке canvas #${i}:`, err);
