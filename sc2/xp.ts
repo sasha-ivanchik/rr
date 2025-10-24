@@ -2,7 +2,7 @@ import { Page } from '@playwright/test';
 import Tesseract from 'tesseract.js';
 
 export interface TableStructure {
-  [rowIndex: number]: { [colIndex: number]: string };
+  [rowIndex: number]: { [colIndex]: string };
 }
 
 export interface AllTables {
@@ -35,6 +35,7 @@ export async function extractStructuredTablesFromCanvas(
   canvasSelector: string
 ): Promise<AllTables> {
   const result: AllTables = {};
+
   console.log(`🔹 Поиск canvas: "${canvasSelector}"`);
   const canvas = await page.$(canvasSelector);
   if (!canvas) {
@@ -42,34 +43,25 @@ export async function extractStructuredTablesFromCanvas(
     return result;
   }
 
-  // Получаем bounding box всего canvas
-  const box = await canvas.boundingBox();
-  if (!box) {
-    console.error('❌ Не удалось получить boundingBox canvas');
-    return result;
-  }
-
-  console.log(`📏 Размер canvas: width=${box.width}, height=${box.height}`);
-
-  // Находим реальный контент на canvas через evaluate
-  const contentBox = await page.evaluate((sel) => {
+  // Получаем размеры canvas напрямую через JS
+  let contentBox = await page.evaluate((sel) => {
     const c = document.querySelector(sel) as HTMLCanvasElement;
     if (!c) return null;
+
+    const width = c.width;
+    const height = c.height;
+
     const ctx = c.getContext('2d');
-    if (!ctx) return null;
+    if (!ctx) return { x: 0, y: 0, width, height };
 
-    const w = c.width;
-    const h = c.height;
+    // Вычисляем bounding box реального контента по пикселям
+    const data = ctx.getImageData(0, 0, width, height).data;
+    let minX = width, minY = height, maxX = 0, maxY = 0;
 
-    let minX = w, minY = h, maxX = 0, maxY = 0;
-    const data = ctx.getImageData(0, 0, w, h).data;
-
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const idx = (y * w + x) * 4;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = (y * width + x) * 4;
         const r = data[idx], g = data[idx + 1], b = data[idx + 2], a = data[idx + 3];
-
-        // Считаем "контентом" все пиксели, которые не белые или почти белые
         if (!(r > 240 && g > 240 && b > 240 && a > 240)) {
           if (x < minX) minX = x;
           if (x > maxX) maxX = x;
@@ -79,13 +71,13 @@ export async function extractStructuredTablesFromCanvas(
       }
     }
 
-    if (minX > maxX || minY > maxY) return null;
+    if (minX > maxX || minY > maxY) return { x: 0, y: 0, width, height };
     return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
   }, canvasSelector);
 
   if (!contentBox) {
-    console.warn('⚠️ Не найден контент на canvas, используем весь canvas');
-    contentBox = { x: 0, y: 0, width: box.width, height: box.height };
+    console.warn('⚠️ Не удалось определить контент, используем весь canvas');
+    contentBox = { x: 0, y: 0, width: 800, height: 600 };
   }
 
   console.log(`🔳 Контент bounding box:`, contentBox);
