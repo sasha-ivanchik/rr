@@ -27,7 +27,7 @@ export async function extractStructuredTablesFromCanvas(
     const box = await canvas.boundingBox();
     if (!box) continue;
     const visible = await canvas.isVisible();
-    if (visible) {
+    if (visible && box.width > 0 && box.height > 0) {
       visibleCanvases.push({ canvas, index: idx, box });
     }
   }
@@ -43,53 +43,32 @@ export async function extractStructuredTablesFromCanvas(
   console.log(`\n🧩 Тест: canvas #${i}, размер: ${Math.round(box.width)}x${Math.round(box.height)}`);
 
   try {
-    // 🔹 Тестовый размер
-    const testWidth = Math.min(1200, Math.round(box.width * 1.5));
-    const testHeight = Math.min(900, Math.round(box.height * 1.5));
-
-    await page.evaluate(({ sel, w, h }) => {
-      const el = document.querySelector(sel) as HTMLCanvasElement;
-      if (el) {
-        (el as any).__originalStyle = el.getAttribute('style') || '';
-        el.style.width = `${w}px`;
-        el.style.height = `${h}px`;
-      }
-    }, { sel: selector, w: testWidth, h: testHeight });
-    console.log(`🧪 Применён тестовый размер: ${testWidth}x${testHeight}`);
-
-    // 🔹 Zoom In
+    // 🔹 Применяем зум
     const zoom = 2.0;
-    await page.evaluate(({ scale }) => {
+    console.log(`🔍 Применяем зум: ${zoom}`);
+    await page.evaluate((scale) => {
       document.body.style.transformOrigin = '0 0';
       document.body.style.transform = `scale(${scale})`;
-    }, { scale: zoom });
-    console.log(`🔍 Применён зум: ${zoom}`);
+    }, zoom);
 
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(800); // даём странице стабилизироваться
 
-    // 🔹 Скриншот
+    // 🔹 Делаем скриншот
     const screenshotPath = `./canvas_test_${Date.now()}.png`;
     console.log(`📸 Делаем скриншот → ${screenshotPath}`);
 
     const buffer = await canvas.screenshot();
     fs.writeFileSync(screenshotPath, buffer);
+    console.log(`💾 Скриншот сохранён: ${screenshotPath}`);
 
-    // 🔹 Сброс трансформации
+    // 🔹 Сбрасываем зум
     await page.evaluate(() => {
       document.body.style.transform = '';
     });
 
-    // 🔹 Возврат оригинального стиля
-    await page.evaluate(({ sel }) => {
-      const el = document.querySelector(sel) as HTMLCanvasElement;
-      if (el && (el as any).__originalStyle !== undefined) {
-        el.setAttribute('style', (el as any).__originalStyle);
-      }
-    }, { sel: selector });
-
     // 🔹 OCR
     console.log(`🧠 OCR через Tesseract...`);
-    const { data } = await Tesseract.recognize(buffer, 'eng', {
+    const { data } = await Tesseract.recognize(screenshotPath, 'eng', {
       langPath: './tessdata',
       logger: (info) => {
         if (info.status) console.log(`[OCR] ${info.status}: ${(info.progress * 100).toFixed(1)}%`);
