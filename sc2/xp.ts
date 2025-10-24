@@ -31,32 +31,35 @@ function groupWordsByRows(
   return grouped;
 }
 
-/** Основная функция с увеличением через transform */
+/** Основная функция с zoom-in через viewport */
 export async function extractStructuredTablesFromCanvas(
   page: Page,
-  zoomScale = 2 // коэффициент увеличения страницы
+  zoomFactor = 2 // коэффициент увеличения
 ): Promise<AllTables> {
   const result: AllTables = {};
 
   try {
-    console.log(`🔍 Применяем zoom страницы x${zoomScale} для OCR...`);
-    await page.evaluate((scale) => {
-      document.body.style.transformOrigin = '0 0';
-      document.body.style.transform = `scale(${scale})`;
-    }, zoomScale);
-    await page.waitForTimeout(200); // ждём применения трансформации
+    // 1️⃣ Узнаём текущий размер viewport
+    const viewport = page.viewportSize() || { width: 1280, height: 720 };
+    console.log(`🔹 Текущий viewport: ${viewport.width}x${viewport.height}`);
 
-    console.log('📸 Делаем скриншот всей страницы...');
+    // 2️⃣ Устанавливаем увеличенный viewport
+    const zoomWidth = Math.round(viewport.width / zoomFactor);
+    const zoomHeight = Math.round(viewport.height / zoomFactor);
+    console.log(`🔍 Устанавливаем zoom-in viewport: ${zoomWidth}x${zoomHeight}`);
+    await page.setViewportSize({ width: zoomWidth, height: zoomHeight });
+    await page.waitForTimeout(200);
+
+    // 3️⃣ Скриншот всей страницы
     const screenshotPath = path.resolve(process.cwd(), 'page_screenshot.png');
     const buffer = await page.screenshot({ path: screenshotPath, fullPage: true });
-    console.log(`✅ Скриншот сохранён: ${screenshotPath}, размер: ${buffer.length} байт`);
+    console.log(`📸 Скриншот сохранён: ${screenshotPath}, размер: ${buffer.length} байт`);
 
-    // сбрасываем zoom
-    await page.evaluate(() => {
-      document.body.style.transform = '';
-    });
+    // 4️⃣ Восстанавливаем исходный viewport
+    await page.setViewportSize(viewport);
 
-    console.log('🧠 Запуск OCR через Tesseract.js (локальная модель)...');
+    // 5️⃣ OCR через Tesseract.js
+    console.log('🧠 Запуск OCR через Tesseract.js...');
     const { data } = await Tesseract.recognize(buffer, 'eng', {
       langPath: path.resolve(process.cwd(), 'tessdata'),
       gzip: false,
