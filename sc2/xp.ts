@@ -2,7 +2,6 @@ import { Page } from '@playwright/test';
 import Tesseract from 'tesseract.js';
 import path from 'path';
 import fs from 'fs';
-import { createCanvas, loadImage } from 'canvas';
 
 export interface TableStructure {
   [rowIndex: number]: { [colIndex: number]: string };
@@ -32,29 +31,33 @@ function groupWordsByRows(
   return grouped;
 }
 
-/** Основная функция с масштабированием */
+/** Основная функция с увеличением через transform */
 export async function extractStructuredTablesFromCanvas(
   page: Page,
-  scale = 2 // коэффициент увеличения изображения перед OCR
+  zoomScale = 2 // коэффициент увеличения страницы
 ): Promise<AllTables> {
   const result: AllTables = {};
 
   try {
+    console.log(`🔍 Применяем zoom страницы x${zoomScale} для OCR...`);
+    await page.evaluate((scale) => {
+      document.body.style.transformOrigin = '0 0';
+      document.body.style.transform = `scale(${scale})`;
+    }, zoomScale);
+    await page.waitForTimeout(200); // ждём применения трансформации
+
     console.log('📸 Делаем скриншот всей страницы...');
     const screenshotPath = path.resolve(process.cwd(), 'page_screenshot.png');
     const buffer = await page.screenshot({ path: screenshotPath, fullPage: true });
     console.log(`✅ Скриншот сохранён: ${screenshotPath}, размер: ${buffer.length} байт`);
 
-    console.log(`🔍 Масштабируем изображение x${scale} для OCR...`);
-    const img = await loadImage(buffer);
-    const canvas = createCanvas(img.width * scale, img.height * scale);
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    const scaledBuffer = canvas.toBuffer();
-    console.log(`✅ Масштабированное изображение готово: ${scaledBuffer.length} байт`);
+    // сбрасываем zoom
+    await page.evaluate(() => {
+      document.body.style.transform = '';
+    });
 
     console.log('🧠 Запуск OCR через Tesseract.js (локальная модель)...');
-    const { data } = await Tesseract.recognize(scaledBuffer, 'eng', {
+    const { data } = await Tesseract.recognize(buffer, 'eng', {
       langPath: path.resolve(process.cwd(), 'tessdata'),
       gzip: false,
       logger: (info) => console.log(`[OCR] ${info.status}: ${info.progress?.toFixed(2)}`),
