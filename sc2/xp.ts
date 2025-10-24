@@ -39,84 +39,36 @@ export async function extractStructuredTablesFromCanvas(
   containerSelector: string
 ): Promise<AllTables> {
   const result: AllTables = {};
-
   console.log(`🔹 Поиск контейнера: "${containerSelector}"`);
   const container = await page.$(containerSelector);
   if (!container) {
-    console.error(`❌ Контейнер "${containerSelector}" не найден`);
+    console.error('❌ Контейнер не найден');
     return result;
   }
 
-  console.log(`🔹 Скроллим контейнер в видимую область...`);
-  await container.scrollIntoViewIfNeeded();
-  await page.waitForTimeout(500);
+  console.log('📸 Делаем скриншот контейнера без скролла...');
+  const buffer = await container.screenshot(); // теперь Playwright сам снимет всё
 
-  // Получаем размеры контейнера
-  const box = await container.boundingBox();
-  if (!box) {
-    console.error('❌ Не удалось получить boundingBox контейнера');
-    return result;
-  }
-
-  console.log(`📏 Размер контейнера: width=${box.width.toFixed(1)}, height=${box.height.toFixed(1)}`);
-
-  // Проверяем размер вьюпорта
-  const viewport = page.viewportSize();
-  if (!viewport) {
-    console.warn('⚠️ Viewport недоступен, может быть слишком большой контейнер');
-  }
-
-  // Применяем зум-аут, если контейнер больше экрана
-  let zoomOut = 1;
-  if (viewport) {
-    zoomOut = Math.min(1, viewport.width / box.width, viewport.height / box.height);
-    if (zoomOut < 1) {
-      console.log(`🔍 Применяем zoom-аут: ${zoomOut.toFixed(2)}`);
-      await page.evaluate((scale) => {
-        document.body.style.transformOrigin = '0 0';
-        document.body.style.transform = `scale(${scale})`;
-      }, zoomOut);
-      await page.waitForTimeout(500);
-    }
-  }
-
-  console.log('📸 Делаем скриншот контейнера...');
-  const buffer = await container.screenshot();
-
-  // Возвращаем масштаб к нормальному
-  if (zoomOut < 1) {
-    await page.evaluate(() => {
-      document.body.style.transform = '';
-    });
-  }
-
-  console.log('🧠 Запуск OCR через Tesseract.js...');
+  console.log('🧠 Запуск OCR...');
   const { data } = await Tesseract.recognize(buffer, 'eng', {
     logger: (info) => console.log(`[OCR] ${info.status}: ${info.progress?.toFixed(2)}`),
   });
 
   const words = (data.words ?? []).filter((w) => w.text?.trim());
-  console.log(`🔠 OCR распознал ${words.length} слов`);
+  console.log(`🔠 Распознано ${words.length} слов`);
 
-  if (!words.length) {
-    console.warn('⚠️ OCR не нашёл текста в контейнере');
-    return result;
-  }
+  if (!words.length) return result;
 
   const rows = groupWordsByRows(words);
-  console.log(`📋 Получено ${rows.length} строк после группировки`);
-
   const table: TableStructure = {};
   rows.forEach((rowWords, rowIndex) => {
     const rowData: Record<number, string> = {};
-    rowWords.forEach((w, colIndex) => {
-      rowData[colIndex] = w.text.trim();
-    });
+    rowWords.forEach((w, colIndex) => (rowData[colIndex] = w.text.trim()));
     table[rowIndex] = rowData;
   });
 
   result[0] = table;
-  console.log('✅ Таблица сформирована успешно');
-
+  console.log('✅ Таблица сформирована');
   return result;
 }
+
