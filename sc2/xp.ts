@@ -9,9 +9,7 @@ export interface AllTables {
   [tableIndex: number]: TableStructure;
 }
 
-/**
- * Группировка слов по строкам
- */
+/** Группировка слов по строкам */
 function groupWordsByRows(
   words: { text: string; bbox: { x0: number; y0: number; x1: number; y1: number } }[],
   yTolerance = 15
@@ -31,97 +29,69 @@ function groupWordsByRows(
   return grouped;
 }
 
-/**
- * Основная функция: tiled screenshot контейнера + OCR
- */
+/** Основная функция */
 export async function extractStructuredTablesFromCanvas(
   page: Page,
-  containerSelector: string
+  canvasSelector: string
 ): Promise<AllTables> {
   const result: AllTables = {};
-
-  console.log(`🔹 Поиск контейнера: "${containerSelector}"`);
-  const container = await page.$(containerSelector);
-  if (!container) {
-    console.error('❌ Контейнер не найден');
+  console.log(`🔹 Поиск canvas: "${canvasSelector}"`);
+  const canvas = await page.$(canvasSelector);
+  if (!canvas) {
+    console.error('❌ Canvas не найден');
     return result;
   }
 
-  const box = await container.boundingBox();
+  // Получаем bounding box всего canvas
+  const box = await canvas.boundingBox();
   if (!box) {
-    console.error('❌ Не удалось получить boundingBox контейнера');
+    console.error('❌ Не удалось получить boundingBox canvas');
     return result;
   }
 
-  const viewport = page.viewportSize();
-  const tileWidth = viewport?.width || 800;
-  const tileHeight = viewport?.height || 600;
+  console.log(`📏 Размер canvas: width=${box.width}, height=${box.height}`);
 
-  console.log(`📏 Размер контейнера: width=${box.width}, height=${box.height}`);
-  console.log(`🔳 Размер тайла: width=${tileWidth}, height=${tileHeight}`);
+  // Находим реальный контент на canvas через evaluate
+  const contentBox = await page.evaluate((sel) => {
+    const c = document.querySelector(sel) as HTMLCanvasElement;
+    if (!c) return null;
+    const ctx = c.getContext('2d');
+    if (!ctx) return null;
 
-  const tiles: Buffer[] = [];
+    const w = c.width;
+    const h = c.height;
 
-  for (let y = 0; y < box.height; y += tileHeight) {
-    for (let x = 0; x < box.width; x += tileWidth) {
-      console.log(`📌 Скриншот тайла x=${x}, y=${y}`);
+    let minX = w, minY = h, maxX = 0, maxY = 0;
+    const data = ctx.getImageData(0, 0, w, h).data;
 
-      await page.evaluate(
-        (sel, scrollX, scrollY) => {
-          const el = document.querySelector(sel) as HTMLElement;
-          if (el) {
-            el.scrollLeft = scrollX;
-            el.scrollTop = scrollY;
-          }
-        },
-        containerSelector,
-        x,
-        y
-      );
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const idx = (y * w + x) * 4;
+        const r = data[idx], g = data[idx + 1], b = data[idx + 2], a = data[idx + 3];
 
-      await page.waitForTimeout(100); // ждем, пока canvas отрисуется
-
-      const tileBuffer = await container.screenshot();
-      tiles.push(tileBuffer);
-    }
-  }
-
-  console.log(`🧩 Объединяем ${tiles.length} тайлов в одно изображение`);
-
-  // Объединяем тайлы через canvas в браузере
-  const mergedBase64 = await page.evaluate(
-    async (selector, tileData: string[], tileWidth: number, tileHeight: number, totalWidth: number, totalHeight: number) => {
-      const merged = document.createElement('canvas');
-      merged.width = totalWidth;
-      merged.height = totalHeight;
-      const ctx = merged.getContext('2d');
-      if (!ctx) return null;
-
-      for (let i = 0; i < tileData.length; i++) {
-        const img = new Image();
-        img.src = tileData[i];
-        await new Promise((res) => { img.onload = res; });
-        const col = i % Math.ceil(totalWidth / tileWidth);
-        const row = Math.floor(i / Math.ceil(totalWidth / tileWidth));
-        ctx.drawImage(img, col * tileWidth, row * tileHeight);
+        // Считаем "контентом" все пиксели, которые не белые или почти белые
+        if (!(r > 240 && g > 240 && b > 240 && a > 240)) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
       }
+    }
 
-      return merged.toDataURL('image/png');
-    },
-    containerSelector,
-    tiles.map((b) => 'data:image/png;base64,' + b.toString('base64')),
-    tileWidth,
-    tileHeight,
-    box.width,
-    box.height
-  );
+    if (minX > maxX || minY > maxY) return null;
+    return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+  }, canvasSelector);
 
-  if (!mergedBase64) {
-    console.error('❌ Не удалось объединить тайлы');
-    return result;
+  if (!contentBox) {
+    console.warn('⚠️ Не найден контент на canvas, используем весь canvas');
+    contentBox = { x: 0, y: 0, width: box.width, height: box.height };
   }
 
-  const buffer = Buffer.from(mergedBase64.split(',')[1], 'base64');
+  console.log(`🔳 Контент bounding box:`, contentBox);
+
+  // Скриншот только области с контентом
+  const buffer = await canvas.screenshot({ clip: contentBox });
 
   console.log('🧠 Запуск OCR через Tesseract.js...');
   const { data } = await Tesseract.recognize(buffer, 'eng', {
