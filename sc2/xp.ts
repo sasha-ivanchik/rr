@@ -1,8 +1,9 @@
 import { Page } from '@playwright/test';
 import Tesseract from 'tesseract.js';
+import path from 'path';
 
 export interface TableStructure {
-  [rowIndex: number]: { [colIndex]: string };
+  [rowIndex: number]: { [colIndex: number]: string };
 }
 
 export interface AllTables {
@@ -44,49 +45,30 @@ export async function extractStructuredTablesFromCanvas(
   }
 
   // Получаем размеры canvas напрямую через JS
-  let contentBox = await page.evaluate((sel) => {
+  const contentBox = await page.evaluate((sel) => {
     const c = document.querySelector(sel) as HTMLCanvasElement;
     if (!c) return null;
-
-    const width = c.width;
-    const height = c.height;
-
-    const ctx = c.getContext('2d');
-    if (!ctx) return { x: 0, y: 0, width, height };
-
-    // Вычисляем bounding box реального контента по пикселям
-    const data = ctx.getImageData(0, 0, width, height).data;
-    let minX = width, minY = height, maxX = 0, maxY = 0;
-
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const idx = (y * width + x) * 4;
-        const r = data[idx], g = data[idx + 1], b = data[idx + 2], a = data[idx + 3];
-        if (!(r > 240 && g > 240 && b > 240 && a > 240)) {
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
-        }
-      }
-    }
-
-    if (minX > maxX || minY > maxY) return { x: 0, y: 0, width, height };
-    return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+    return { width: c.width, height: c.height };
   }, canvasSelector);
 
   if (!contentBox) {
-    console.warn('⚠️ Не удалось определить контент, используем весь canvas');
-    contentBox = { x: 0, y: 0, width: 800, height: 600 };
+    console.error('❌ Не удалось получить размеры canvas');
+    return result;
   }
 
-  console.log(`🔳 Контент bounding box:`, contentBox);
+  if (contentBox.width < 10 || contentBox.height < 10) {
+    console.warn('⚠️ Canvas слишком мал для OCR, пропускаем');
+    return result;
+  }
 
-  // Скриншот только области с контентом
-  const buffer = await canvas.screenshot({ clip: contentBox });
+  console.log(`📏 Canvas size: width=${contentBox.width}, height=${contentBox.height}`);
 
-  console.log('🧠 Запуск OCR через Tesseract.js...');
+  console.log('📸 Скриншот всего canvas...');
+  const buffer = await canvas.screenshot();
+
+  console.log('🧠 Запуск OCR через Tesseract.js (локальная модель)...');
   const { data } = await Tesseract.recognize(buffer, 'eng', {
+    langPath: path.resolve(process.cwd(), 'tessdata'), // папка с eng.traineddata
     logger: (info) => console.log(`[OCR] ${info.status}: ${info.progress?.toFixed(2)}`),
   });
 
