@@ -22,28 +22,27 @@ export async function extractNumbersFromCanvas(page: Page, containerLocator: Loc
 
   const screenshotBase64 = screenshotBuffer.toString('base64');
 
-  // Масштабирование, контраст и бинаризация через canvas
+  // Масштабируем и делаем динамическую бинаризацию через canvas
   const dataUrl = await page.evaluate((base64: string) => {
     return new Promise<string>((resolve) => {
       const img = new Image();
       img.onload = () => {
-        const scale = 3; // увеличиваем для мелкого текста
+        const scale = 4; // увеличиваем для мелкого текста
         const temp = document.createElement('canvas');
         temp.width = img.width * scale;
         temp.height = img.height * scale;
         const ctx = temp.getContext('2d')!;
         ctx.drawImage(img, 0, 0, temp.width, temp.height);
 
-        // Повышаем контраст и бинаризация
         const imgData = ctx.getImageData(0, 0, temp.width, temp.height);
         const data = imgData.data;
+
+        // Динамическая бинаризация: светлые пиксели -> белые, темные -> черные
         for (let i = 0; i < data.length; i += 4) {
-          // яркость пикселя
           const brightness = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-          // бинаризация по порогу
-          const val = brightness > 128 ? 255 : 0;
+          const val = brightness > 50 ? 255 : 0;
           data[i] = data[i + 1] = data[i + 2] = val;
-          data[i + 3] = 255;
+          data[i + 3] = 255; // альфа
         }
         ctx.putImageData(imgData, 0, 0);
 
@@ -62,7 +61,7 @@ export async function extractNumbersFromCanvas(page: Page, containerLocator: Loc
   console.log('🔍 [Debug] Запускаем Tesseract OCR...');
   const result = await Tesseract.recognize(dataUrl, 'eng', {
     tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.,:-',
-    tessedit_pageseg_mode: 6 // PSM 6 – один блок текста
+    tessedit_pageseg_mode: 6 // один блок текста
   });
 
   console.log('🟢 [Debug] OCR завершен. Содержимое result.data.text:', result?.data?.text);
