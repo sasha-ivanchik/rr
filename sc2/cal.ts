@@ -11,7 +11,17 @@ export async function extractWordsFromViewport(page: Page) {
   if (!container) throw new Error('Container not found');
 
   console.log('🟢 [Debug] Делаем скриншот контейнера...');
-  const screenshotBuffer = await container.screenshot({ fullPage: false });
+  const boundingBox = await container.boundingBox();
+  if (!boundingBox) throw new Error('Cannot get bounding box of container');
+
+  const screenshotBuffer = await container.screenshot({
+    clip: {
+      x: boundingBox.x,
+      y: boundingBox.y,
+      width: Math.min(boundingBox.width, page.viewportSize()?.width || 800),
+      height: Math.min(boundingBox.height, page.viewportSize()?.height || 600)
+    }
+  });
   console.log('🟢 [Debug] Скриншот получен, размер (байт):', screenshotBuffer.length);
 
   // Сохраняем скриншот для ручного дебага
