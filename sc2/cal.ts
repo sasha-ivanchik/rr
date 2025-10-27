@@ -1,55 +1,66 @@
 import { Page } from '@playwright/test';
+import Tesseract from 'tesseract.js';
 
-/**
- * Перехватывает отрисовку текста на Canvas (fillText/strokeText)
- * и возвращает все вызовы с аргументами.
- */
-export async function captureCanvasText(page: Page) {
-  console.log('🟦 [Playwright] Устанавливаю хук для CanvasRenderingContext2D...');
+export async function extractWordsFromContainer(page: Page, containerSelector: string) {
+  // 1️⃣ Получаем объединенный DataURL с контрастом
+  const dataUrl = await page.evaluate((selector) => {
+    const container = document.querySelector(selector) as HTMLElement;
+    if (!container) throw new Error('Container not found');
 
-  await page.evaluate(() => {
-    // Если уже установлен — пропускаем
-    if ((window as any).__canvasTextHookInstalled) return;
-    (window as any).__canvasTextHookInstalled = true;
+    const width = container.scrollWidth;
+    const height = container.scrollHeight;
 
-    console.log('🎯 [CanvasHook] Внедрение хука...');
+    const temp = document.createElement('canvas');
+    temp.width = width;
+    temp.height = height;
+    const ctx = temp.getContext('2d');
+    if (!ctx) throw new Error('Cannot get 2D context');
 
-    // Глобальные списки вызовов
-    (window as any).__canvasTextCalls = [];
+    const containerRect = container.getBoundingClientRect();
 
-    const proto = CanvasRenderingContext2D.prototype;
-    const wrapMethod = (name: keyof CanvasRenderingContext2D) => {
-      const orig = proto[name] as any;
-      proto[name] = function (...args: any[]) {
-        try {
-          const [text, x, y] = args;
-          const record = { fn: name, text, x, y, time: Date.now() };
-          (window as any).__canvasTextCalls.push(record);
-          console.log(`🖊️ [CanvasHook] ${name}("${text}", ${x}, ${y})`);
-        } catch (err) {
-          console.warn(`[CanvasHook] Ошибка при логировании ${name}:`, err);
-        }
-        return orig.apply(this, args);
-      };
-    };
+    // Объединяем все видимые канвасы
+    container.querySelectorAll('canvas').forEach(canvas => {
+      const style = getComputedStyle(canvas);
+      if (style.display === 'none' || style.visibility === 'hidden') return;
 
-    // Подключаем перехват для текстовых методов
-    wrapMethod('fillText');
-    wrapMethod('strokeText');
+      const rect = canvas.getBoundingClientRect();
+      const offsetX = rect.left - containerRect.left;
+      const offsetY = rect.top - containerRect.top;
 
-    console.log('✅ [CanvasHook] Хук установлен');
+      ctx.drawImage(canvas, offsetX, offsetY, rect.width, rect.height);
+    });
+
+    // 2️⃣ Применяем ручное повышение контрастности
+    const imgData = ctx.getImageData(0, 0, temp.width, temp.height);
+    const data = imgData.data;
+    for (let i = 0; i < data.length; i += 4) {
+      // простой контраст: усиление по яркости
+      for (let c = 0; c < 3; c++) { // R,G,B
+        let val = data[i + c];
+        val = ((val - 128) * 1.5 + 128); // коэффициент контраста 1.5
+        data[i + c] = Math.min(255, Math.max(0, val));
+      }
+    }
+    ctx.putImageData(imgData, 0, 0);
+
+    return temp.toDataURL('image/png');
+  }, containerSelector);
+
+  // 3️⃣ OCR с Tesseract.js
+  console.log('🔍 [OCR] Распознаем текст...');
+  const result = await Tesseract.recognize(dataUrl, 'eng', {
+    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,:- '
   });
 
-  // Можно подождать немного, пока произойдет рендер
-  await page.waitForTimeout(1000);
+  // 4️⃣ Возвращаем список слов для дебага
+  const words = result.data.words.map(w => ({
+    text: w.text,
+    conf: w.confidence,
+    bbox: w.bbox
+  }));
 
-  // Извлекаем собранные вызовы
-  const captured = await page.evaluate(() => (window as any).__canvasTextCalls || []);
-  console.log('📊 [Playwright] Найденные вызовы Canvas:', captured.length);
+  console.log(`🧠 [OCR] Найдено слов: ${words.length}`);
+  console.log('Пример первых слов:', words.slice(0, 5));
 
-  for (const c of captured) {
-    console.log(`→ ${c.fn}("${c.text}", x=${c.x}, y=${c.y})`);
-  }
-
-  return captured;
+  return words;
 }
