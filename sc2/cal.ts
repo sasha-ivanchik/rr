@@ -2,11 +2,13 @@ import { Page } from '@playwright/test';
 import Tesseract from 'tesseract.js';
 
 export async function extractWordsFromContainer(page: Page) {
+  // 1️⃣ Получаем объединенный DataURL с контрастом
   const dataUrl = await page.evaluate(() => {
     console.log('🟢 [Debug] Начинаем обработку контейнера .тст');
     const container = document.querySelector('.тст') as HTMLElement;
     if (!container) throw new Error('Container not found');
 
+    // Размеры контейнера (включая контент вне вьюпорта)
     const width = container.scrollWidth || container.offsetWidth;
     const height = container.scrollHeight || container.offsetHeight;
     console.log('🟢 [Debug] Размер контейнера:', width, height);
@@ -19,9 +21,9 @@ export async function extractWordsFromContainer(page: Page) {
     const ctx = temp.getContext('2d');
     if (!ctx) throw new Error('Cannot get 2D context');
 
-    const containerRect = container.getBoundingClientRect();
     let canvasCount = 0;
 
+    // Проходим по всем канвасам в контейнере
     container.querySelectorAll('canvas').forEach((canvas, idx) => {
       const style = getComputedStyle(canvas);
       if (style.display === 'none' || style.visibility === 'hidden') {
@@ -29,29 +31,29 @@ export async function extractWordsFromContainer(page: Page) {
         return;
       }
 
-      const rect = canvas.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) {
+      // Используем реальные размеры канваса
+      if (canvas.width === 0 || canvas.height === 0) {
         console.log(`⚪ [Debug] Canvas ${idx} имеет нулевой размер, пропускаем`);
         return;
       }
 
-      const offsetX = rect.left - containerRect.left;
-      const offsetY = rect.top - containerRect.top;
-      console.log(`🟡 [Debug] Canvas ${idx}: size=${rect.width}x${rect.height}, offset=(${offsetX},${offsetY})`);
+      const offsetX = canvas.offsetLeft;
+      const offsetY = canvas.offsetTop;
+      console.log(`🟡 [Debug] Canvas ${idx}: size=${canvas.width}x${canvas.height}, offset=(${offsetX},${offsetY})`);
 
-      ctx.drawImage(canvas, offsetX, offsetY, rect.width, rect.height);
+      ctx.drawImage(canvas, offsetX, offsetY, canvas.width, canvas.height);
       canvasCount++;
     });
 
     console.log('🟢 [Debug] Всего канвасов обработано:', canvasCount);
 
-    // Применяем контрастность
+    // Применяем ручное повышение контрастности
     const imgData = ctx.getImageData(0, 0, temp.width, temp.height);
     const data = imgData.data;
     for (let i = 0; i < data.length; i += 4) {
       for (let c = 0; c < 3; c++) {
         let val = data[i + c];
-        val = ((val - 128) * 1.5 + 128); // контраст 1.5
+        val = ((val - 128) * 1.5 + 128); // коэффициент контраста 1.5
         data[i + c] = Math.min(255, Math.max(0, val));
       }
     }
