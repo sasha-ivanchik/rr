@@ -1,77 +1,55 @@
 import { Page } from '@playwright/test';
-import ExcelJS from 'exceljs';
 
-export class TablePage {
-  constructor(private readonly page: Page) {}
+/**
+ * Перехватывает отрисовку текста на Canvas (fillText/strokeText)
+ * и возвращает все вызовы с аргументами.
+ */
+export async function captureCanvasText(page: Page) {
+  console.log('🟦 [Playwright] Устанавливаю хук для CanvasRenderingContext2D...');
 
-  async exportTableToExcelInChunks(
-    selector: string,
-    outputPath = './output.xlsx',
-    chunkSize = 100
-  ) {
-    const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet('Sheet1');
+  await page.evaluate(() => {
+    // Если уже установлен — пропускаем
+    if ((window as any).__canvasTextHookInstalled) return;
+    (window as any).__canvasTextHookInstalled = true;
 
-    // Скрапим таблицу с учетом rowspan/colspan
-    const tableData = await this.page.locator(selector).evaluate((table: HTMLTableElement) => {
-      const result: string[][] = [];
-      const spanMap: Record<string, string> = {};
+    console.log('🎯 [CanvasHook] Внедрение хука...');
 
-      const rows = Array.from(table.querySelectorAll('tr'));
-      for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
-        const row = rows[rowIndex];
-        const cells = Array.from(row.querySelectorAll('th, td'));
-        const rowData: string[] = [];
+    // Глобальные списки вызовов
+    (window as any).__canvasTextCalls = [];
 
-        let colIndex = 0;
-
-        for (const cell of cells) {
-          // Пропускаем колонки, занятые rowspan из предыдущих строк
-          while (spanMap[`${rowIndex},${colIndex}`] !== undefined) {
-            rowData[colIndex] = spanMap[`${rowIndex},${colIndex}`];
-            colIndex++;
-          }
-
-          const text = cell.textContent?.trim() ?? '';
-          const rowspan = parseInt(cell.getAttribute('rowspan') || '1');
-          const colspan = parseInt(cell.getAttribute('colspan') || '1');
-
-          // Записываем значение в текущую строку
-          for (let c = 0; c < colspan; c++) {
-            rowData[colIndex + c] = text;
-          }
-
-          // Запоминаем значение для будущих строк
-          if (rowspan > 1) {
-            for (let r = 1; r < rowspan; r++) {
-              for (let c = 0; c < colspan; c++) {
-                spanMap[`${rowIndex + r},${colIndex + c}`] = text;
-              }
-            }
-          }
-
-          colIndex += colspan;
+    const proto = CanvasRenderingContext2D.prototype;
+    const wrapMethod = (name: keyof CanvasRenderingContext2D) => {
+      const orig = proto[name] as any;
+      proto[name] = function (...args: any[]) {
+        try {
+          const [text, x, y] = args;
+          const record = { fn: name, text, x, y, time: Date.now() };
+          (window as any).__canvasTextCalls.push(record);
+          console.log(`🖊️ [CanvasHook] ${name}("${text}", ${x}, ${y})`);
+        } catch (err) {
+          console.warn(`[CanvasHook] Ошибка при логировании ${name}:`, err);
         }
+        return orig.apply(this, args);
+      };
+    };
 
-        result.push(rowData);
-      }
+    // Подключаем перехват для текстовых методов
+    wrapMethod('fillText');
+    wrapMethod('strokeText');
 
-      // Выравниваем строки по длине
-      const maxCols = Math.max(...result.map(r => r.length));
-      return result.map(row => {
-        while (row.length < maxCols) row.push('');
-        return row;
-      });
-    });
+    console.log('✅ [CanvasHook] Хук установлен');
+  });
 
-    // 🔁 Пишем данные в Excel чанками
-    for (let i = 0; i < tableData.length; i += chunkSize) {
-      const chunk = tableData.slice(i, i + chunkSize);
-      chunk.forEach(row => sheet.addRow(row));
-      console.log(`✅ Wrote rows ${i} to ${i + chunk.length - 1}`);
-    }
+  // Можно подождать немного, пока произойдет рендер
+  await page.waitForTimeout(1000);
 
-    await workbook.xlsx.writeFile(outputPath);
-    console.log(`✅ Exported Excel: ${outputPath}`);
+  // Извлекаем собранные вызовы
+  const captured = await page.evaluate(() => (window as any).__canvasTextCalls || []);
+  console.log('📊 [Playwright] Найденные вызовы Canvas:', captured.length);
+
+  for (const c of captured) {
+    console.log(`→ ${c.fn}("${c.text}", x=${c.x}, y=${c.y})`);
   }
+
+  return captured;
 }
