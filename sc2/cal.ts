@@ -6,7 +6,6 @@ import path from 'path';
 export async function extractWordsFromFirstCanvas(page: Page, containerLocator: Locator) {
   console.log('🟢 [Debug] Ждем появления канваса в контейнере...');
   
-  // Ждём появления хотя бы одного канваса
   await containerLocator.locator('canvas').first().waitFor({ state: 'visible', timeout: 10000 });
 
   const canvasHandle = await containerLocator.locator('canvas').first();
@@ -19,21 +18,24 @@ export async function extractWordsFromFirstCanvas(page: Page, containerLocator: 
   // Сохраняем скриншот для ручного дебага
   const screenshotPath = path.join(process.cwd(), 'first_canvas_debug.png');
   fs.writeFileSync(screenshotPath, screenshotBuffer);
-  console.log('💾 [Debug] Скриншот канваса сохранён в корне проекта:', screenshotPath);
+  console.log('💾 [Debug] Скриншот канваса сохранён:', screenshotPath);
 
-  // Масштабируем и повышаем контраст через canvas
-  const dataUrl = await page.evaluate((buffer) => {
+  // Преобразуем buffer в base64 строку для передачи в page.evaluate
+  const screenshotBase64 = screenshotBuffer.toString('base64');
+
+  // Масштабируем и повышаем контраст через canvas в браузере
+  const dataUrl = await page.evaluate((base64: string) => {
     return new Promise<string>((resolve) => {
       const img = new Image();
       img.onload = () => {
-        const scale = 2; // масштаб для OCR
+        const scale = 2;
         const temp = document.createElement('canvas');
         temp.width = img.width * scale;
         temp.height = img.height * scale;
         const ctx = temp.getContext('2d')!;
         ctx.drawImage(img, 0, 0, temp.width, temp.height);
 
-        // Контрастность
+        // Повышение контраста
         const imgData = ctx.getImageData(0, 0, temp.width, temp.height);
         const data = imgData.data;
         for (let i = 0; i < data.length; i += 4) {
@@ -51,9 +53,9 @@ export async function extractWordsFromFirstCanvas(page: Page, containerLocator: 
         console.error('❌ [Debug] Ошибка загрузки изображения в canvas', err);
         resolve('');
       };
-      img.src = 'data:image/png;base64,' + buffer.toString('base64');
+      img.src = 'data:image/png;base64,' + base64;
     });
-  }, screenshotBuffer);
+  }, screenshotBase64);
 
   if (!dataUrl) throw new Error('❌ [Debug] Не удалось создать изображение для OCR');
 
