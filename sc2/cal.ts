@@ -80,3 +80,49 @@ export async function extractNumbersFromCanvas(page: Page, containerLocator: Loc
 
   return words;
 }
+
+const dataUrl = await page.evaluate((base64: string) => {
+  return new Promise<string>((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = 4;
+      const temp = document.createElement('canvas');
+      temp.width = img.width * scale;
+      temp.height = img.height * scale;
+      const ctx = temp.getContext('2d')!;
+      ctx.drawImage(img, 0, 0, temp.width, temp.height);
+
+      const imgData = ctx.getImageData(0, 0, temp.width, temp.height);
+      const data = imgData.data;
+
+      // 1️⃣ Определяем среднюю яркость — тёмный или светлый фон
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        const b = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        sum += b;
+      }
+      const avg = sum / (data.length / 4);
+      const invert = avg < 128; // если фон тёмный → инвертируем
+
+      // 2️⃣ Контраст + бинаризация + инверсия
+      for (let i = 0; i < data.length; i += 4) {
+        let brightness = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        if (invert) brightness = 255 - brightness;
+        const val = brightness > 128 ? 255 : 0;
+        data[i] = data[i + 1] = data[i + 2] = val;
+        data[i + 3] = 255;
+      }
+
+      ctx.putImageData(imgData, 0, 0);
+      resolve(temp.toDataURL('image/png'));
+    };
+    img.onerror = (err) => {
+      console.error('❌ [Debug] Ошибка загрузки изображения', err);
+      resolve('');
+    };
+    img.src = 'data:image/png;base64,' + base64;
+  });
+}, screenshotBase64);
+
+
+fs.writeFileSync('canvas_debug_processed.png', Buffer.from(dataUrl.split(',')[1], 'base64'));
