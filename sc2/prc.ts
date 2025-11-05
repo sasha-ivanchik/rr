@@ -1,6 +1,4 @@
 import { Page } from '@playwright/test';
-import fs from 'fs';
-import { createCanvas, loadImage } from 'canvas'; // npm i canvas
 
 export interface DiffRegion {
   x: number;
@@ -26,151 +24,165 @@ export class ScreenshotDiff {
     private colorTolerance = 40
   ) {}
 
-  // Сравниваем два скриншота
   public async compareScreenshots(
     beforeBase64: string,
-    afterBase64: string,
-    debugSavePath?: string
+    afterBase64: string
   ): Promise<{ regions: DiffRegion[]; debugBase64: string }> {
     console.log('[DEBUG] Starting compareScreenshots');
 
-    // Загружаем картинки в Node Canvas
-    const beforeImg = await loadImage(Buffer.from(beforeBase64, 'base64'));
-    const afterImg = await loadImage(Buffer.from(afterBase64, 'base64'));
+    return await this.page.evaluate(
+      async (params: {
+        beforeBase64: string;
+        afterBase64: string;
+        diffThreshold: number;
+        clusterSize: number;
+        minClusterPixels: number;
+        colorTolerance: number;
+      }) => {
+        const { beforeBase64, afterBase64, diffThreshold, clusterSize, minClusterPixels, colorTolerance } = params;
 
-    const canvas = createCanvas(afterImg.width, afterImg.height);
-    const ctx = canvas.getContext('2d');
+        const beforeImg = new Image();
+        const afterImg = new Image();
 
-    // Получаем ImageData
-    ctx.drawImage(beforeImg, 0, 0);
-    const beforeData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        return await new Promise<{ regions: DiffRegion[]; debugBase64: string }>((resolve) => {
+          let loaded = 0;
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(afterImg, 0, 0);
-    const afterData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+          const onload = () => {
+            loaded++;
+            if (loaded < 2) return;
 
-    console.log('[DEBUG] Images loaded, starting pixel comparison');
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d')!;
+            canvas.width = beforeImg.width;
+            canvas.height = beforeImg.height;
 
-    // 1. Собираем изменившиеся пиксели
-    const diffPixels: Pixel[] = [];
-    for (let i = 0; i < beforeData.length; i += 4) {
-      const dr = Math.abs(beforeData[i] - afterData[i]);
-      const dg = Math.abs(beforeData[i + 1] - afterData[i + 1]);
-      const db = Math.abs(beforeData[i + 2] - afterData[i + 2]);
-      const delta = (dr + dg + db) / 3;
-      if (delta > this.diffThreshold) {
-        const idx = i / 4;
-        const x = idx % canvas.width;
-        const y = Math.floor(idx / canvas.width);
-        diffPixels.push({
-          x,
-          y,
-          r: afterData[i],
-          g: afterData[i + 1],
-          b: afterData[i + 2],
+            ctx.drawImage(beforeImg, 0, 0);
+            const beforeData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(afterImg, 0, 0);
+            const afterData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+            console.log('[DEBUG] Images loaded');
+
+            // 1. Найти изменившиеся пиксели
+            const diffPixels: Pixel[] = [];
+            for (let i = 0; i < beforeData.length; i += 4) {
+              const dr = Math.abs(beforeData[i] - afterData[i]);
+              const dg = Math.abs(beforeData[i + 1] - afterData[i + 1]);
+              const db = Math.abs(beforeData[i + 2] - afterData[i + 2]);
+              const delta = (dr + dg + db) / 3;
+              if (delta > diffThreshold) {
+                const idx = i / 4;
+                const x = idx % canvas.width;
+                const y = Math.floor(idx / canvas.width);
+                diffPixels.push({
+                  x, y,
+                  r: afterData[i],
+                  g: afterData[i + 1],
+                  b: afterData[i + 2]
+                });
+              }
+            }
+            console.log('[DEBUG] Changed pixels found:', diffPixels.length);
+
+            // 2. Кластеризация через Map для быстрого поиска соседей
+            const assigned = new Set<string>();
+            const pixelMap = new Map<string, Pixel>();
+            diffPixels.forEach(p => pixelMap.set(`${p.x},${p.y}`, p));
+
+            const clusters: { pixels: Pixel[] }[] = [];
+            const offsets: [number, number][] = [];
+            for (let dx = -clusterSize; dx <= clusterSize; dx++) {
+              for (let dy = -clusterSize; dy <= clusterSize; dy++) offsets.push([dx, dy]);
+            }
+
+            const colorDist = (a: Pixel, b: Pixel) =>
+              Math.sqrt((a.r - b.r) ** 2 + (a.g - b.g) ** 2 + (a.b - b.b) ** 2);
+
+            for (const p of diffPixels) {
+              const key = `${p.x},${p.y}`;
+              if (assigned.has(key)) continue;
+
+              const clusterPixels: Pixel[] = [];
+              const queue: Pixel[] = [p];
+
+              while (queue.length) {
+                const cur = queue.pop()!;
+                const curKey = `${cur.x},${cur.y}`;
+                if (assigned.has(curKey)) continue;
+                assigned.add(curKey);
+                clusterPixels.push(cur);
+
+                for (const [dx, dy] of offsets) {
+                  const nx = cur.x + dx;
+                  const ny = cur.y + dy;
+                  const nKey = `${nx},${ny}`;
+                  const neighbor = pixelMap.get(nKey);
+                  if (!neighbor || assigned.has(nKey)) continue;
+                  if (colorDist(cur, neighbor) <= colorTolerance) queue.push(neighbor);
+                }
+              }
+
+              if (clusterPixels.length >= minClusterPixels) clusters.push({ pixels: clusterPixels });
+            }
+
+            console.log('[DEBUG] Clusters formed:', clusters.length);
+
+            // 3. Формируем регионы
+            const regions: DiffRegion[] = clusters.map(c => {
+              const xs = c.pixels.map(p => p.x);
+              const ys = c.pixels.map(p => p.y);
+              return {
+                x: Math.min(...xs),
+                y: Math.min(...ys),
+                width: Math.max(...xs) - Math.min(...xs) + 1,
+                height: Math.max(...ys) - Math.min(...ys) + 1
+              };
+            });
+
+            // 4. Рисуем debug
+            const debugCanvas = document.createElement('canvas');
+            const debugCtx = debugCanvas.getContext('2d')!;
+            debugCanvas.width = canvas.width;
+            debugCanvas.height = canvas.height;
+            debugCtx.drawImage(afterImg, 0, 0);
+            const colors = ['rgba(255,0,0,0.6)','rgba(0,255,0,0.6)','rgba(0,0,255,0.6)','rgba(255,255,0,0.6)'];
+            clusters.forEach((c,i)=>{
+              const xs = c.pixels.map(p=>p.x);
+              const ys = c.pixels.map(p=>p.y);
+              const x1 = Math.min(...xs);
+              const y1 = Math.min(...ys);
+              const w = Math.max(...xs)-x1+1;
+              const h = Math.max(...ys)-y1+1;
+              debugCtx.strokeStyle = colors[i % colors.length];
+              debugCtx.lineWidth = 1;
+              debugCtx.strokeRect(x1,y1,w,h);
+            });
+
+            const debugBase64 = debugCanvas.toDataURL('image/png').split(',')[1];
+            resolve({ regions, debugBase64 });
+          };
+
+          beforeImg.onload = onload;
+          afterImg.onload = onload;
+          beforeImg.src = 'data:image/png;base64,' + beforeBase64;
+          afterImg.src = 'data:image/png;base64,' + afterBase64;
         });
+      },
+      {
+        beforeBase64,
+        afterBase64,
+        diffThreshold: this.diffThreshold,
+        clusterSize: this.clusterSize,
+        minClusterPixels: this.minClusterPixels,
+        colorTolerance: this.colorTolerance
       }
-    }
-
-    console.log('[DEBUG] Changed pixels found:', diffPixels.length);
-
-    // 2. Кластеризация
-    const clusters = this.clusterPixels(diffPixels);
-
-    console.log('[DEBUG] Clusters formed:', clusters.length);
-
-    // 3. Преобразуем кластеры в регионы
-    const regions: DiffRegion[] = clusters.map((c) => {
-      const xs = c.pixels.map((p) => p.x);
-      const ys = c.pixels.map((p) => p.y);
-      return {
-        x: Math.min(...xs),
-        y: Math.min(...ys),
-        width: Math.max(...xs) - Math.min(...xs) + 1,
-        height: Math.max(...ys) - Math.min(...ys) + 1,
-      };
-    });
-
-    // 4. Рисуем debug картинку
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(afterImg, 0, 0);
-
-    const colors = ['rgba(255,0,0,0.6)', 'rgba(0,255,0,0.6)', 'rgba(0,0,255,0.6)', 'rgba(255,255,0,0.6)'];
-    clusters.forEach((c, i) => {
-      const xs = c.pixels.map((p) => p.x);
-      const ys = c.pixels.map((p) => p.y);
-      const x1 = Math.min(...xs);
-      const y1 = Math.min(...ys);
-      const w = Math.max(...xs) - x1 + 1;
-      const h = Math.max(...ys) - y1 + 1;
-      ctx.strokeStyle = colors[i % colors.length];
-      ctx.lineWidth = 1;
-      ctx.strokeRect(x1, y1, w, h);
-    });
-
-    const debugBase64 = canvas.toBuffer('image/png').toString('base64');
-    if (debugSavePath) fs.writeFileSync(debugSavePath, Buffer.from(debugBase64, 'base64'));
-    console.log('[DEBUG] Debug image saved');
-
-    return { regions, debugBase64 };
+    );
   }
 
-  // Кластеризация пикселей (Node.js, быстро)
-  private clusterPixels(pixels: Pixel[]): { pixels: Pixel[] }[] {
-    const clusters: { pixels: Pixel[] }[] = [];
-    const assigned = new Set<string>();
-
-    // Map координат для быстрого поиска соседей
-    const pixelMap = new Map<string, Pixel>();
-    pixels.forEach((p) => pixelMap.set(`${p.x},${p.y}`, p));
-
-    const neighborsOffsets = [];
-    for (let dx = -this.clusterSize; dx <= this.clusterSize; dx++) {
-      for (let dy = -this.clusterSize; dy <= this.clusterSize; dy++) {
-        neighborsOffsets.push([dx, dy]);
-      }
-    }
-
-    const colorDist = (a: Pixel, b: Pixel) =>
-      Math.sqrt((a.r - b.r) ** 2 + (a.g - b.g) ** 2 + (a.b - b.b) ** 2);
-
-    for (const p of pixels) {
-      const key = `${p.x},${p.y}`;
-      if (assigned.has(key)) continue;
-
-      const clusterPixels: Pixel[] = [];
-      const queue: Pixel[] = [p];
-
-      while (queue.length) {
-        const cur = queue.pop()!;
-        const curKey = `${cur.x},${cur.y}`;
-        if (assigned.has(curKey)) continue;
-        assigned.add(curKey);
-        clusterPixels.push(cur);
-
-        for (const [dx, dy] of neighborsOffsets) {
-          const nx = cur.x + dx;
-          const ny = cur.y + dy;
-          const nKey = `${nx},${ny}`;
-          const neighbor = pixelMap.get(nKey);
-          if (!neighbor) continue;
-          if (assigned.has(nKey)) continue;
-          if (colorDist(cur, neighbor) <= this.colorTolerance) {
-            queue.push(neighbor);
-          }
-        }
-      }
-
-      if (clusterPixels.length >= this.minClusterPixels) {
-        clusters.push({ pixels: clusterPixels });
-      }
-    }
-
-    return clusters;
-  }
-
-  // Получение цвета по координатам из Base64
-  public static getPixelRGB(base64: string, x: number, y: number): { r: number; g: number; b: number } {
+  // Получение цвета по координатам
+  public static getPixelRGB(base64: string, x: number, y: number): { r: number, g: number, b: number } {
     const img = new Image();
     img.src = 'data:image/png;base64,' + base64;
     const canvas = document.createElement('canvas');
@@ -180,6 +192,6 @@ export class ScreenshotDiff {
     ctx.drawImage(img, 0, 0);
     const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
     const idx = (y * canvas.width + x) * 4;
-    return { r: data[idx], g: data[idx + 1], b: data[idx + 2] };
+    return { r: data[idx], g: data[idx+1], b: data[idx+2] };
   }
 }
