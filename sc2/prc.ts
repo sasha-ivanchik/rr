@@ -1,11 +1,16 @@
-class ImageUtils {
-    /**
-     * Receives a base64 image string (data:image/png;base64,....)
-     * and returns the number of unique colors in the image.
-     */
-    static async countUniqueColors(base64: string): Promise<number> {
+import { Page } from "@playwright/test";
+
+export async function countUniqueColorsFromBase64(
+    page: Page,
+    base64: string
+): Promise<number> {
+    
+    const dataUrl = "data:image/png;base64," + base64;
+
+    return await page.evaluate(async (imgSrc) => {
         return new Promise((resolve, reject) => {
             const img = new Image();
+            
             img.onload = () => {
                 try {
                     const canvas = document.createElement("canvas");
@@ -13,13 +18,11 @@ class ImageUtils {
                     canvas.height = img.height;
 
                     const ctx = canvas.getContext("2d");
-                    if (!ctx) return reject("Unable to get canvas context");
+                    if (!ctx) return reject("No 2D context");
 
                     ctx.drawImage(img, 0, 0);
 
-                    // Extract all pixels
-                    const imageData = ctx.getImageData(0, 0, img.width, img.height);
-                    const data = imageData.data; // Uint8ClampedArray [r,g,b,a,r,g,b,a...]
+                    const { data } = ctx.getImageData(0, 0, img.width, img.height);
 
                     const colors = new Set<string>();
 
@@ -29,9 +32,7 @@ class ImageUtils {
                         const b = data[i + 2];
                         const a = data[i + 3];
 
-                        // Build a compact 32-bit color key
-                        const key = `${r},${g},${b},${a}`;
-                        colors.add(key);
+                        colors.add(`${r},${g},${b},${a}`);
                     }
 
                     resolve(colors.size);
@@ -40,9 +41,8 @@ class ImageUtils {
                 }
             };
 
-            img.onerror = (err) => reject(err);
-
-            img.src = base64;
+            img.onerror = reject;
+            img.src = imgSrc;
         });
-    }
+    }, dataUrl);
 }
