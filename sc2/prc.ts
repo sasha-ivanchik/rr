@@ -1,33 +1,30 @@
-import { execSync } from "child_process";
+import fs from 'fs';
+import path from 'path';
 
-async function main() {
-  const files = process.argv.slice(2);
+const resultsRoot = 'results';
+const merged = 'allure-final';
 
-  if (files.length === 0) {
-    console.error("❌ Provide at least one test file");
-    process.exit(1);
+if (fs.existsSync(merged)) fs.rmSync(merged, { recursive: true, force: true });
+fs.mkdirSync(merged);
+
+const runs = fs.readdirSync(resultsRoot).filter(d => d.startsWith('run-'));
+for (const run of runs) {
+  const folder = path.join(resultsRoot, run, 'allure-results');
+  if (!fs.existsSync(folder)) continue;
+
+  const files = fs.readdirSync(folder);
+  for (const f of files) {
+    const src = path.join(folder, f);
+    let dest = path.join(merged, f);
+
+    if (fs.existsSync(dest)) {
+      const ext = path.extname(f);
+      const base = path.basename(f, ext);
+      dest = path.join(merged, `${base}_${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`);
+    }
+
+    fs.copyFileSync(src, dest);
   }
-
-  const timestamp = Date.now();
-  const resultsDir = `results/run-${timestamp}`;
-
-  console.log(`▶️ Running files:`, files);
-  console.log(`📁 Saving results to: ${resultsDir}`);
-
-  const cmd = [
-    "npx playwright test",
-    ...files,
-    `--output=${resultsDir}`,
-    `--reporter=line,allure-playwright`
-  ].join(" ");
-
-  try {
-    execSync(cmd, { stdio: "inherit" });
-  } catch (e) {
-    console.error("⚠️ Some tests failed.");
-  }
-
-  console.log("✔️ Run finished");
 }
 
-main();
+console.log('✅ Allure results merged into', merged);
