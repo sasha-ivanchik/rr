@@ -1,85 +1,80 @@
 import fs from "fs";
 import path from "path";
+import { spawnSync } from "child_process";
 
-export function parseAllureResults(allureDir = "allure-final"): FinalParsedData {
-  const jsonDir = path.join(allureDir, "data", "test-cases");
-
-  const files = fs.readdirSync(jsonDir).filter(f => f.endsWith(".json"));
-
-  const apps = new Set<string>();
-  const envs = new Set<string>();
-  const suites = new Set<string>();
-
-  let passed = 0;
-  let failed = 0;
-
-  for (const file of files) {
-    const content = fs.readFileSync(path.join(jsonDir, file), "utf8");
-    const test = JSON.parse(content);
-
-    // collect labels
-    const labels = test.labels || [];
-
-    const app = labels.find(l => l.name === "appName")?.value;
-    if (app) apps.add(app);
-
-    const env = labels.find(l => l.name === "envName")?.value;
-    if (env) envs.add(env);
-
-    labels
-      .filter(l => l.name === "suite")
-      .forEach(l => suites.add(l.value));
-
-    // collect status
-    if (test.status === "passed") passed++;
-    else failed++;
+function assertDir(dir: string) {
+  if (!fs.existsSync(dir)) {
+    throw new Error(`Directory not found: ${dir}`);
   }
-
-  const status = failed === 0 ? "pass" : "fail";
-
-  return {
-    date: new Date().toISOString(),
-    apps: [...apps],
-    envs: [...envs],
-    suites: [...suites],
-    total: passed + failed,
-    passed,
-    failed,
-    status
-  };
+  if (!fs.statSync(dir).isDirectory()) {
+    throw new Error(`Path is not a directory: ${dir}`);
+  }
 }
 
+function runCommand(cmd: string, args: string[]) {
+  const result = spawnSync(cmd, args, { stdio: "inherit" });
 
-
-export function generateFinalHtml(data: FinalParsedData): string {
-  const color = data.status === "pass" ? "#2ecc71" : "#e74c3c";
-  const statusText = data.status === "pass" ? "PASSED" : "FAILED";
-
-  const suitesHtml = data.suites
-    .map(s => `<li style="margin-bottom:4px;">${s}</li>`)
-    .join("");
-
-  return `
-  <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
-    <h2 style="margin-top:0;">🧪 Final Test Report</h2>
-
-    <p><strong>Date:</strong> ${data.date}</p>
-
-    <p><strong>Application:</strong> ${data.apps.join(", ") || "N/A"}</p>
-    <p><strong>Environment:</strong> ${data.envs.join(", ") || "N/A"}</p>
-
-    <p><strong>Suites:</strong></p>
-    <ul style="padding-left:18px; margin-top:4px; margin-bottom:18px;">
-        ${suitesHtml}
-    </ul>
-
-    <p><strong>Total:</strong> ${data.total}</p>
-    <p><strong>Passed:</strong> ${data.passed}</p>
-    <p><strong>Failed:</strong> ${data.failed}</p>
-
-    <h3 style="color:${color}; margin-top:20px;">
-       Overall Status: ${statusText}
-    </h3>
-  </div>
-  `;
+  if (result.error) {
+    throw new Error(`Failed to execute command: ${cmd}\n${result.error}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(`Command exited with code ${result.status}: ${cmd}`);
+  }
 }
+
+async function main() {
+  try {
+    const resultsRoot = "results";
+    const outputDir = "allure-final";
+
+    assertDir(resultsRoot);
+
+    // Collect runs (directories that match run-*)
+    const runs = fs
+      .readdirSync(resultsRoot)
+      .filter(d => d.startsWith("run-"))
+      .map(d => path.join(resultsRoot, d))
+      .filter(p => fs.statSync(p).isDirectory());
+
+    if (runs.length === 0) {
+      console.error("❌ No test run directories found (run-xxx)");
+      process.exit(1);
+    }
+
+    console.log(`🧩 Found ${runs.length} test run folders:`);
+    runs.forEach(r => console.log("   ▸", r));
+
+    // Clean/create output directory
+    if (fs.existsSync(outputDir)) {
+      console.log(`🧹 Cleaning previous ${outputDir}/ directory...`);
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+    fs.mkdirSync(outputDir);
+
+    // Check if allure exists
+    const allureCheck = spawnSync("npx", ["allure", "--version"], { encoding: "utf-8" });
+    if (allureCheck.status !== 0) {
+      console.error("❌ Allure CLI not available (install: npm i -D allure-commandline)");
+      process.exit(1);
+    }
+
+    console.log("📦 Merging Allure results...");
+
+    const mergeArgs = [
+      "allure",
+      "merge",
+      ...runs,
+      "-o",
+      outputDir
+    ];
+
+    runCommand("npx", mergeArgs);
+
+    console.log(`📊 Allure results merged → ${outputDir}/`);
+  } catch (err: any) {
+    console.error("❌ Merge failed:", err.message);
+    process.exit(1);
+  }
+}
+
+main();
