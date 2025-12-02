@@ -1,17 +1,26 @@
-const { execSync } = require('child_process');
-const fs = require('fs');
-const path = require('path');
+import { execSync } from "child_process";
+import { readdirSync } from "fs";
 
-function timestamp() {
-  const now = new Date();
-  return now.toISOString().replace(/[:.]/g, '-');
+async function main() {
+  const runs = readdirSync("results").filter(dir => dir.startsWith("run-"));
+
+  if (runs.length === 0) {
+    console.error("❌ No runs found in results/");
+    process.exit(1);
+  }
+
+  const mergeCmd = [
+    "npx allure merge",
+    ...runs.map(run => `results/${run}`),
+    "-o",
+    "allure-final"
+  ];
+
+  console.log("🧩 Merging runs:", runs);
+
+  execSync(mergeCmd.join(" "), { stdio: "inherit" });
+
+  console.log("📊 Final report ready: allure-final/");
 }
 
-const runDir = path.join('results', `run-${timestamp()}`);
-fs.mkdirSync(runDir, { recursive: true });
-
-const passedArgs = process.argv.slice(2).join(' ');
-
-console.log(`📂 Writing results into: ${runDir}`);
-
-execSync(`npx playwright test ${passedArgs} --output=${runDir}`, { stdio: 'inherit' });
+main();
