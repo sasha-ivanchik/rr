@@ -1,177 +1,148 @@
-import { AllureResult, AllureLabel } from "./your-types";
-import { getLabel } from "./allure-report-builder";
+import fs from 'fs'
+import path from 'path'
 
-export interface DescribeStats {
-  suiteName: string;          // откуда брали вкладку (same as first report)
-  describeName: string;       // имя describe блока
-  total: number;
-  passed: number;
-  failed: number;
-  skipped: number;
-  noData: number;
-  overallStatus: "Passed" | "Failed" | "Skipped";
+export interface AllureLabel {
+  name: string
+  value: string
 }
 
-export function aggregateByDescribe(results: AllureResult[]): DescribeStats[] {
-  //
-  // → Группируем: suiteName → describeName → тесты
-  //
-  const map: Record<string, Record<string, AllureResult[]>> = {};
+export interface AllureStatusDetails {
+  trace?: string
+}
 
-  for (const r of results) {
-    const suite = getLabel(r.labels, "suiteName") 
-      || getLabel(r.labels, "suite") 
-      || "Unknown Suite";
+export interface AllureTestResult {
+  uuid: string
+  name: string
+  status: 'passed' | 'failed' | 'broken' | 'skipped'
+  start?: number
+  stop?: number
+  labels?: AllureLabel[]
+  statusDetails?: AllureStatusDetails
+}
 
-    const describe = getLabel(r.labels, "parentSuite")
-      || getLabel(r.labels, "subSuite")
-      || "Unknown Describe";
 
-    if (!map[suite]) map[suite] = {};
-    if (!map[suite][describe]) map[suite][describe] = [];
+export interface ParsedTest {
+  name: string
+  status: string
+  duration?: number
+  trace?: string
+}
 
-    map[suite][describe].push(r);
-  }
+export interface ParsedSuite {
+  suite: string
+  suiteId: string | null
+  backlogItemRef: string | null
+  productAreaRefId: string | null
+  release: string
+  tests: Record<string, ParsedTest[]>
+  testFields: Record<string, string>[]
+  environment: Record<string, string>[]
+  duration: number
+}
 
-  const final: DescribeStats[] = [];
 
-  //
-  // → Считаем статистику
-  //
-  for (const suiteName of Object.keys(map)) {
-    const describes = map[suiteName];
+const TEST_FIELDS_LABELS = [
+  'Test_Level',
+  'Test_Type',
+  'Testing_Tool_Type',
+  'Framework',
+] as const
 
-    for (const describeName of Object.keys(describes)) {
-      const list = describes[describeName];
+const ENVIRONMENT_LABELS = [
+  'AUT Env',
+  'Browser',
+  'DB',
+  'Distribution',
+  'OS',
+] as const
 
-      let total = 0;
-      let passed = 0;
-      let failed = 0;
-      let skipped = 0;
-      let noData = 0;
 
-      for (const r of list) {
-        total++;
-
-        const resLabel = getLabel(r.labels, "res");
-        if (resLabel === "no_data") {
-          noData++;
-          continue;
-        }
-
-        const s = (r.status || "unknown").toLowerCase();
-
-        if (s === "passed") passed++;
-        else if (s === "failed" || s === "broken") failed++;
-        else if (s === "skipped") skipped++;
+function readAllureJsonFiles(dir: string): AllureTestResult[] {
+  return fs
+    .readdirSync(dir)
+    .filter(f => f.endsWith('.json'))
+    .map(f => {
+      const fullPath = path.join(dir, f)
+      try {
+        return JSON.parse(fs.readFileSync(fullPath, 'utf-8'))
+      } catch {
+        return null
       }
+    })
+    .filter(Boolean)
+}
 
-      // Rules:
-      //   ❗ if any failed → Failed
-      //   ❗ else if any skipped → Skipped
-      //   ✔ else → Passed
-      let overall: "Passed" | "Failed" | "Skipped";
-      if (failed > 0) overall = "Failed";
-      else if (skipped > 0) overall = "Skipped";
-      else overall = "Passed";
 
-      final.push({
-        suiteName,
-        describeName,
-        total,
-        passed,
-        failed,
-        skipped,
-        noData,
-        overallStatus: overall,
-      });
+function getLabel(labels: AllureLabel[] | undefined, name: string): string | null {
+  return labels?.find(l => l.name === name)?.value ?? null
+}
+
+
+
+function collectLabelGroup(
+  labels: AllureLabel[] | undefined,
+  allowed: readonly string[]
+): Record<string, string>[] {
+  if (!labels) return []
+
+  const obj: Record<string, string> = {}
+
+  for (const key of allowed) {
+    const value = getLabel(labels, key)
+    if (value) {
+      obj[key] = value
     }
   }
 
-  return final;
+  return Object.keys(obj).length ? [obj] : []
 }
 
 
+export function parseAllureResults(resultsDir: string): ParsedSuite[] {
+  const results = readAllureJsonFiles(resultsDir)
 
+  const suitesMap = new Map<string, ParsedSuite>()
 
+  for (const test of results) {
+    const labels = test.labels ?? []
 
-export function buildDescribeHtmlReport(
-  date: string,
-  appName: string,
-  environment: string,
-  stats: DescribeStats[]
-): string {
-  const rows = stats.map(s => `
-<tr>
-  <td>${escapeHtml(s.suiteName)}</td>
-  <td>${escapeHtml(s.describeName)}</td>
-  <td>${s.total}</td>
-  <td>${s.passed}</td>
-  <td>${s.failed}</td>
-  <td>${s.skipped}</td>
-  <td>${s.noData}</td>
-  <td>${s.overallStatus}</td>
-</tr>`).join('');
+    const suiteName = getLabel(labels, 'suiteName') ?? 'Unknown_Suite'
+    const subSuite = getLabel(labels, 'subSuite') ?? 'Default'
 
-  return `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-  body { font-family: Arial; font-size: 13px; }
-  table { border-collapse: collapse; width: 100%; }
-  th, td { border: 1px solid #ccc; padding: 6px; }
-  th { background: #eee; }
-</style>
-</head>
-<body>
-<h2>Describe Groups Report</h2>
-<p><b>Date:</b> ${date}</p>
-<p><b>Application:</b> ${escapeHtml(appName)}</p>
-<p><b>Environment:</b> ${escapeHtml(environment)}</p>
+    if (!suitesMap.has(suiteName)) {
+      suitesMap.set(suiteName, {
+        suite: suiteName,
+        suiteId: getLabel(labels, 'suiteId'),
+        backlogItemRef: getLabel(labels, 'backlogItemRef'),
+        productAreaRefId: getLabel(labels, 'productAreaId'),
+        release: getLabel(labels, 'release') ?? 'Default_Release',
+        tests: {},
+        testFields: collectLabelGroup(labels, TEST_FIELDS_LABELS),
+        environment: collectLabelGroup(labels, ENVIRONMENT_LABELS),
+        duration: 0,
+      })
+    }
 
-<table>
-  <thead>
-    <tr>
-      <th>Suite</th>
-      <th>Describe</th>
-      <th>Total</th>
-      <th>Passed</th>
-      <th>Failed</th>
-      <th>Skipped</th>
-      <th>No Data</th>
-      <th>Status</th>
-    </tr>
-  </thead>
-  <tbody>
-    ${rows}
-  </tbody>
-</table>
-</body>
-</html>`;
-}
+    const suite = suitesMap.get(suiteName)!
 
-function escapeHtml(s: string) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
+    if (!suite.tests[subSuite]) {
+      suite.tests[subSuite] = []
+    }
 
+    const duration =
+      test.start && test.stop ? test.stop - test.start : undefined
 
+    suite.tests[subSuite].push({
+      name: test.name,
+      status: test.status,
+      duration,
+      trace: test.statusDetails?.trace,
+    })
 
+    if (duration) {
+      suite.duration += duration
+    }
+  }
 
-
-
-export function generateFinalDescribeReport(folder: string, meta: {
-  date?: string;
-  appName?: string;
-  environment?: string;
-}) {
-  const results = readAllureResults(folder);
-  const describeStats = aggregateByDescribe(results);
-
-  return buildDescribeHtmlReport(
-    meta.date || new Date().toISOString(),
-    meta.appName || "Unknown App",
-    meta.environment || "Unknown Env",
-    describeStats
-  );
+  return Array.from(suitesMap.values())
 }
