@@ -1,118 +1,66 @@
-import { exec } from "child_process";
-
-export function readRegistryValue(
-  key: string,
-  valueName: string
-): Promise<string | null> {
-  return new Promise((resolve) => {
-    const cmd = `reg query "${key}" /v ${valueName}`;
-
-    exec(cmd, { windowsHide: true }, (err, stdout) => {
-      if (err || !stdout) {
-        resolve(null);
-        return;
-      }
-
-      const lines = stdout.split("\n");
-      for (const line of lines) {
-        if (line.includes(valueName)) {
-          // пример строки:
-          // wsEndpoint    REG_SZ    ws://127.0.0.1:9696/devtools/browser/...
-          const parts = line.trim().split(/\s+/);
-          const value = parts.slice(2).join(" ");
-          resolve(value);
-          return;
-        }
-      }
-
-      resolve(null);
-    });
-  });
-}
-
-
-
-import { readRegistryValue } from "./readRegistryValue";
-
-const WS_KEY = "HKCU\\Software\\OpenFin\\Runtime\\DevTools";
-const WS_VALUE = "wsEndpoint";
-
-export async function readWsEndpoint(): Promise<string | null> {
-  const ws = await readRegistryValue(WS_KEY, WS_VALUE);
-  return ws?.startsWith("ws://") ? ws : null;
-}
-
-
-
-
-export function createChildWsEndpointReader(
-  parentWsEndpoint: string
-) {
-  let lastSeen: string | null = null;
-
-  return async function readChildWsEndpoint(): Promise<string | null> {
-    const ws = await readWsEndpoint();
-
-    if (!ws) return null;
-
-    // первый раз — запоминаем parent
-    if (!lastSeen) {
-      lastSeen = ws;
-      return null;
-    }
-
-    // если endpoint изменился — это НОВЫЙ runtime (child)
-    if (ws !== lastSeen && ws !== parentWsEndpoint) {
-      return ws;
-    }
-
-    return null;
-  };
-}
-
-
-
-import { Page, chromium } from "playwright";
-import { createChildWsEndpointReader } from "./readChildWsEndpointFromRegistry";
+import { Page, BrowserContext } from "playwright";
 
 export async function attachToChildApp(
   parentPage: Page,
-  parentWsEndpoint: string
+  options?: {
+    timeoutMs?: number;
+    pollMs?: number;
+    isChild?: (page: Page) => Promise<boolean> | boolean;
+  }
 ): Promise<Page> {
-  const readChildWs = createChildWsEndpointReader(parentWsEndpoint);
-
+  const timeoutMs = options?.timeoutMs ?? 120_000;
+  const pollMs = options?.pollMs ?? 1_000;
   const start = Date.now();
-  const timeout = 120_000;
-  const poll = 1_000;
 
-  const parentContext = parentPage.context();
+  const context = parentPage.context();
 
-  while (Date.now() - start < timeout) {
-    // 1️⃣ тот же context
-    for (const page of parentContext.pages()) {
-      const url = page.url();
-      if (
-        page !== parentPage &&
-        (url.startsWith("http://") || url.startsWith("https://"))
-      ) {
+  const isChildPage = async (page: Page) => {
+    const url = page.url();
+
+    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+      return false;
+    }
+
+    if (page === parentPage) {
+      return false;
+    }
+
+    if (options?.isChild) {
+      return await options.isChild(page);
+    }
+
+    return true;
+  };
+
+  console.log("[attachToChildApp] waiting for child app...");
+
+  while (Date.now() - start < timeoutMs) {
+    // 1️⃣ проверяем существующие страницы
+    for (const page of context.pages()) {
+      if (await isChildPage(page)) {
+        console.log("[attachToChildApp] child page found (existing):", page.url());
         await page.waitForLoadState("domcontentloaded");
+        await page.bringToFront();
         return page;
       }
     }
 
-    // 2️⃣ новый runtime
-    const childWs = await readChildWs();
-    if (childWs) {
-      const browser = await chromium.connectOverCDP(childWs);
-      const context = browser.contexts()[0];
+    // 2️⃣ ждём новую страницу
+    try {
+      const page = await context.waitForEvent("page", {
+        timeout: pollMs,
+      });
 
-      const page = await waitForHttpPage(context);
-      await page.waitForLoadState("domcontentloaded");
-      return page;
+      if (await isChildPage(page)) {
+        console.log("[attachToChildApp] child page found (new):", page.url());
+        await page.waitForLoadState("domcontentloaded");
+        await page.bringToFront();
+        return page;
+      }
+    } catch {
+      // норм — просто не появилось за pollMs
     }
-
-    await sleep(poll);
   }
 
-  throw new Error("Child app not found (timeout)");
+  throw new Error("attachToChildApp timeout: child app not found");
 }
