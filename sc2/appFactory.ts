@@ -1,36 +1,25 @@
-import { spawn } from "child_process";
+import { Page, BrowserContext } from "playwright";
 
-export function killAllOpenFin(): Promise<void> {
-  return new Promise((resolve) => {
-    spawn(
-      "taskkill",
-      ["/IM", "OpenFin*", "/T", "/F"],
-      { stdio: "ignore", windowsHide: true }
-    ).once("close", () => resolve());
-  });
-}
+export async function findHttpPage(
+  context: BrowserContext
+): Promise<Page> {
+  // сначала пробуем уже существующие
+  for (const page of context.pages()) {
+    const url = page.url();
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+      return page;
+    }
+  }
 
-
-
-import { spawn } from "child_process";
-
-export function killAllOpenFin(): Promise<void> {
-  return new Promise((resolve) => {
-    const ps = spawn(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-Command",
-        `
-          Get-Process OpenFin* -ErrorAction SilentlyContinue |
-          Stop-Process -Force
-        `
-      ],
-      { stdio: "ignore", windowsHide: true }
-    );
-
-    // ⛔ НЕ ждём stdout
-    // ⛔ НЕ ждём exit-код
-    ps.once("close", () => resolve());
+  // если ещё не появилась — ждём
+  return await context.waitForEvent("page", {
+    predicate: (page) => {
+      const url = page.url();
+      return (
+        url.startsWith("http://") ||
+        url.startsWith("https://")
+      );
+    },
+    timeout: 15_000,
   });
 }
