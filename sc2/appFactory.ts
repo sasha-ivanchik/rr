@@ -1,100 +1,66 @@
-import http from "http";
+import "dotenv/config";
+import { loadRegistry, saveRegistry } from "../openfin/registry";
+import { launchGBAMDesktop } from "../openfin/launchGBAMDesktop";
+import process from "process";
+import { chromium } from "@playwright/test";
 
-export async function getWsEndpoint(port: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const req = http.request(
-      {
-        host: "127.0.0.1",
-        port,
-        path: "/json/version",
-        method: "GET",
-        timeout: 3000,
-      },
-      (res) => {
-        let data = "";
-
-        res.setEncoding("utf8");
-        res.on("data", (chunk) => {
-          data += chunk;
-        });
-
-        res.on("end", () => {
-          try {
-            const json = JSON.parse(data);
-            const ws = json.webSocketDebuggerUrl;
-
-            if (!ws) {
-              reject(
-                new Error("webSocketDebuggerUrl not found in /json/version")
-              );
-              return;
-            }
-
-            resolve(ws);
-          } catch (e) {
-            reject(e);
-          }
-        });
-      }
-    );
-
-    req.on("error", reject);
-    req.on("timeout", () => {
-      req.destroy(new Error("HTTP timeout while reading /json/version"));
-    });
-
-    req.end();
-  });
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-
-import http from "http";
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+// (опционально, но очень полезно) проверяем, что по wsEndpoint реально можно подключиться
+async function canAttach(wsEndpoint: string): Promise<boolean> {
+  try {
+    const browser = await chromium.connectOverCDP(wsEndpoint);
+    await browser.close();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-export async function waitUntilReady(
-  port: number,
-  timeoutMs = 120_000,
-  pollIntervalMs = 300
-): Promise<void> {
-  const start = Date.now();
+async function main() {
+  const app = process.env.APP;
+  const env = process.env.ENV;
 
-  while (Date.now() - start < timeoutMs) {
-    const ok = await new Promise<boolean>((resolve) => {
-      const req = http.request(
-        {
-          host: "127.0.0.1",
-          port,
-          path: "/json/version",
-          method: "GET",
-          timeout: 1500,
-        },
-        (res) => {
-          // CDP готов, если сервер отвечает 200
-          resolve(res.statusCode === 200);
-        }
-      );
-
-      req.on("error", () => resolve(false));
-      req.on("timeout", () => {
-        req.destroy();
-        resolve(false);
-      });
-
-      req.end();
-    });
-
-    if (ok) {
-      return;
-    }
-
-    await sleep(pollIntervalMs);
+  if (!app || !env) {
+    throw new Error("APP and ENV must be set in .env");
   }
 
-  throw new Error(
-    `CDP was not ready on port ${port} within ${timeoutMs}ms`
-  );
+  // 1) Пытаемся reuse registry (если уже живо)
+  const existing = loadRegistry();
+  if (existing && existing.app === app && existing.env === env) {
+    if (isProcessAlive(existing.pid) && (await canAttach(existing.cdpEndpoint))) {
+      console.log("✅ Reusing existing parent from registry");
+      return;
+    }
+    console.log("⚠️ Existing registry is stale. Will start parent again.");
+  }
+
+  // 2) Стартуем родителя через твой готовый метод
+  const res = await launchGBAMDesktop(app, env);
+
+  // 3) Пишем только сериализуемые вещи
+  saveRegistry({
+    app,
+    env,
+    pid: res.pid,
+    cdpEndpoint: res.wsEndpoint,
+    createdAt: new Date().toISOString(),
+  });
+
+  console.log("✅ Parent started and registered");
+  console.log("PID:", res.pid);
+  console.log("CDP:", res.wsEndpoint);
 }
 
+main().catch((e) => {
+  console.error("❌ openfin:parent:start failed");
+  console.error(e);
+  process.exit(1);
+});
