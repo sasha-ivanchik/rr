@@ -46,3 +46,55 @@ export async function getWsEndpoint(port: number): Promise<string> {
     req.end();
   });
 }
+
+
+import http from "http";
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function waitUntilReady(
+  port: number,
+  timeoutMs = 120_000,
+  pollIntervalMs = 300
+): Promise<void> {
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const ok = await new Promise<boolean>((resolve) => {
+      const req = http.request(
+        {
+          host: "127.0.0.1",
+          port,
+          path: "/json/version",
+          method: "GET",
+          timeout: 1500,
+        },
+        (res) => {
+          // CDP готов, если сервер отвечает 200
+          resolve(res.statusCode === 200);
+        }
+      );
+
+      req.on("error", () => resolve(false));
+      req.on("timeout", () => {
+        req.destroy();
+        resolve(false);
+      });
+
+      req.end();
+    });
+
+    if (ok) {
+      return;
+    }
+
+    await sleep(pollIntervalMs);
+  }
+
+  throw new Error(
+    `CDP was not ready on port ${port} within ${timeoutMs}ms`
+  );
+}
+
