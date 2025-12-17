@@ -1,18 +1,56 @@
-import { RuntimeInfo } from "../registry/types";
+import { chromium } from "@playwright/test";
+import { RuntimeInfo } from "../../core/registry/types";
 
 type Options = {
-  app: string;
-  env: string;
   parent: RuntimeInfo;
+  appName: string;
+  env: string;
 };
 
 export async function tryFindChildInParent(
-  _opts: Options
+  opts: Options
 ): Promise<RuntimeInfo | null> {
-  // 1. connectOverCDP(parent.cdp.wsEndpoint)
-  // 2. получить pages / targets
-  // 3. фильтр по app/env/http
-  // 4. вернуть RuntimeInfo
+  const { parent, appName, env } = opts;
 
+  const browser = await chromium.connectOverCDP(
+    parent.cdp.wsEndpoint
+  );
+
+  for (const ctx of browser.contexts()) {
+    for (const page of ctx.pages()) {
+      const url = page.url();
+      if (!/^https?:\/\//i.test(url)) continue;
+
+      let title = "";
+      try {
+        title = await page.title();
+      } catch {}
+
+      const hay = (url + " " + title).toLowerCase();
+      if (
+        hay.includes(appName.toLowerCase()) &&
+        hay.includes(env.toLowerCase())
+      ) {
+        const wsEndpoint = page
+          .context()
+          .browser()
+          ?.wsEndpoint();
+
+        if (!wsEndpoint) continue;
+
+        return {
+          name: appName,
+          env,
+          pid: parent.pid, // embedded child
+          cdp: {
+            port: parent.cdp.port,
+            wsEndpoint
+          }
+        };
+      }
+    }
+  }
+
+  await browser.close();
   return null;
 }

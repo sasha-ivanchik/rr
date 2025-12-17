@@ -1,36 +1,48 @@
-import { ResolveChildOptions } from "./types";
+import { RuntimeInfo } from "../../core/registry/types";
 import { tryFindChildInParent } from "./fromParent";
 import { tryFindChildExternal } from "./fromExternal";
-import { RuntimeInfo } from "../registry/types";
+
+type Options = {
+  parent: RuntimeInfo;
+  appName: string;
+  env: string;
+  timeoutMs?: number;
+  pollMs?: number;
+};
 
 export async function resolveChild(
-  options: ResolveChildOptions
+  opts: Options
 ): Promise<RuntimeInfo> {
   const {
-    app,
-    env,
     parent,
+    appName,
+    env,
     timeoutMs = 60_000,
-    pollIntervalMs = 500
-  } = options;
+    pollMs = 500
+  } = opts;
 
   const started = Date.now();
 
   while (Date.now() - started < timeoutMs) {
-    // 1️⃣ пробуем найти внутри parent
-    if (parent) {
-      const fromParent = await tryFindChildInParent({ app, env, parent });
-      if (fromParent) return fromParent;
-    }
+    const fromParent = await tryFindChildInParent({
+      parent,
+      appName,
+      env
+    });
+    if (fromParent) return fromParent;
 
-    // 2️⃣ пробуем найти как отдельный процесс
-    const fromExternal = await tryFindChildExternal({ app, env });
+    const fromExternal = await tryFindChildExternal({
+      appName,
+      env
+    });
     if (fromExternal) return fromExternal;
 
-    await delay(pollIntervalMs);
+    await delay(pollMs);
   }
 
-  throw new Error(`Child not found within ${timeoutMs}ms`);
+  throw new Error(
+    `Child not found (app=${appName}, env=${env})`
+  );
 }
 
 function delay(ms: number) {

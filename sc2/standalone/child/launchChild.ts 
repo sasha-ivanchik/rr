@@ -1,0 +1,4 @@
+export async function launchChild(): Promise<void> {
+  // TODO:
+  // - API / CLI / кнопка / URL
+}

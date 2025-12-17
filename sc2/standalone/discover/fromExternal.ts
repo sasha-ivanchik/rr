@@ -1,17 +1,48 @@
-import { RuntimeInfo } from "../registry/types";
+export interface ExternalAppInfo {
+  pid: number;
+  port: number;
+  wsEndpoint: string;
+  source: "external";
+}
 
-type Options = {
-  app: string;
-  env: string;
-};
 
-export async function tryFindChildExternal(
-  _opts: Options
-): Promise<RuntimeInfo | null> {
-  // 1. проверить известные порты (range или конфиг)
-  // 2. попытаться подключиться по CDP
-  // 3. проверить targets по app/env
-  // 4. вернуть RuntimeInfo
 
-  return null;
+export async function findExternalOpenFin(
+  parentPid: number,
+  appName: string,
+  env: string,
+  timeoutMs = 30_000
+): Promise<ExternalAppInfo> {
+
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const pids = excludeParent(
+      getOpenFinPids(),
+      parentPid
+    );
+
+    for (const pid of pids) {
+      const ports = findPortsByPid(pid);
+
+      for (const port of ports) {
+        const ws = await isCDPPort(port);
+        if (!ws) continue;
+
+        const ok = await matchesApp(ws, appName, env);
+        if (!ok) continue;
+
+        return {
+          pid,
+          port,
+          wsEndpoint: ws,
+          source: "external",
+        };
+      }
+    }
+
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  throw new Error("External OpenFin app not found");
 }
