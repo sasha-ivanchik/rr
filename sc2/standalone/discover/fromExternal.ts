@@ -7,42 +7,71 @@ export interface ExternalAppInfo {
 
 
 
-export async function findExternalOpenFin(
-  parentPid: number,
-  appName: string,
+export async function resolveChild(
+  name: string,
   env: string,
+  parentPid: number,
   timeoutMs = 30_000
-): Promise<ExternalAppInfo> {
+): Promise<{
+  pid: number;
+  port: number;
+  wsEndpoint: string;
+}> {
 
-  const start = Date.now();
+  const startedAt = Date.now();
+  const pollIntervalMs = 1000;
 
-  while (Date.now() - start < timeoutMs) {
-    const pids = excludeParent(
-      getOpenFinPids(),
-      parentPid
-    );
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const pids = getOpenFinPids().filter(pid => pid !== parentPid);
 
-    for (const pid of pids) {
-      const ports = findPortsByPid(pid);
+      for (const pid of pids) {
+        let ports: number[];
 
-      for (const port of ports) {
-        const ws = await isCDPPort(port);
-        if (!ws) continue;
+        try {
+          ports = findPortsByPid(pid);
+        } catch {
+          continue; // pid ещё не готов
+        }
 
-        const ok = await matchesApp(ws, appName, env);
-        if (!ok) continue;
+        for (const port of ports) {
+          let wsEndpoint: string | null;
 
-        return {
-          pid,
-          port,
-          wsEndpoint: ws,
-          source: "external",
-        };
+          try {
+            wsEndpoint = await getWsEndpointFromPort(port);
+          } catch {
+            continue; // порт не CDP
+          }
+
+          if (!wsEndpoint) continue;
+
+          let isMatch = false;
+
+          try {
+            isMatch = await matchesApp(wsEndpoint, name, env);
+          } catch {
+            continue; // CDP нестабилен — это НОРМА
+          }
+
+          if (!isMatch) continue;
+
+          // ✅ НАЙДЕНО
+          return {
+            pid,
+            port,
+            wsEndpoint,
+          };
+        }
       }
+    } catch {
+      // глобальная ошибка сканирования — подавляем
     }
 
-    await new Promise(r => setTimeout(r, 1000));
+    await sleep(pollIntervalMs);
   }
 
-  throw new Error("External OpenFin app not found");
+  throw new Error(
+    `resolveChild timeout: name=${name}, env=${env}, timeout=${timeoutMs}ms`
+  );
 }
+
