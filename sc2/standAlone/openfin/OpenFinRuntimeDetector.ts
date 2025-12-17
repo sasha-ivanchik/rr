@@ -1,40 +1,26 @@
-import { chromium, Page, BrowserContext } from "playwright";
+import { getOpenFinPids, getListeningPorts } from "../utils/process";
+import { getWsFromPort } from "../utils/net";
+import { RuntimeInfo } from "./OpenFinTypes";
 
-export class OpenFinAttach {
-  static async attachToRuntime(
-    wsEndpoint: string
-  ): Promise<Page> {
-    const browser = await chromium.connectOverCDP(wsEndpoint);
-    const context = browser.contexts()[0];
+export class OpenFinRuntimeDetector {
+  static async detectNewRuntime(
+    excludePid: number
+  ): Promise<RuntimeInfo | null> {
+    const pids = await getOpenFinPids();
 
-    if (!context) {
-      throw new Error("No browser context");
-    }
+    for (const pid of pids) {
+      if (pid === excludePid) continue;
 
-    return this.waitForHttpPage(context);
-  }
+      const ports = await getListeningPorts(pid);
 
-  private static async waitForHttpPage(
-    context: BrowserContext
-  ): Promise<Page> {
-    for (const page of context.pages()) {
-      if (this.isHttp(page)) {
-        await page.waitForLoadState("domcontentloaded");
-        return page;
+      for (const port of ports) {
+        const ws = await getWsFromPort(port);
+        if (ws) {
+          return { pid, port, wsEndpoint: ws };
+        }
       }
     }
 
-    const page = await context.waitForEvent("page", {
-      predicate: (p) => this.isHttp(p),
-      timeout: 60_000,
-    });
-
-    await page.waitForLoadState("domcontentloaded");
-    return page;
-  }
-
-  private static isHttp(page: Page) {
-    const url = page.url();
-    return url.startsWith("http://") || url.startsWith("https://");
+    return null;
   }
 }
