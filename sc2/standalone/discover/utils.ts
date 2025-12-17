@@ -1,116 +1,98 @@
-import { execSync } from "child_process";
+export function getAllTcpPorts(): { pid: number; port: number }[] {
+  const out = execSync(`netstat -ano -p tcp`, { encoding: "utf-8" });
 
-export function getOpenFinPids(): number[] {
-  const output = execSync(
-    `wmic process where "name='openfin.exe'" get ProcessId`,
+  const lines = out.split("\n");
+
+  const result: { pid: number; port: number }[] = [];
+
+  for (const line of lines) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 5) continue;
+
+    const local = parts[1]; // 127.0.0.1:9222
+    const pid = Number(parts[4]);
+
+    if (!Number.isInteger(pid)) continue;
+
+    const m = local.match(/:(\d+)$/);
+    if (!m) continue;
+
+    result.push({ pid, port: Number(m[1]) });
+  }
+
+  return result;
+}
+
+
+
+export function getChildPids(parentPid: number): number[] {
+  const out = execSync(
+    `wmic process where (ParentProcessId=${parentPid}) get ProcessId`,
     { encoding: "utf-8" }
   );
 
-  return output
+  return out
     .split("\n")
-    .map(l => l.trim())
-    .filter(l => /^\d+$/.test(l))
+    .map((l) => l.trim())
+    .filter((l) => /^\d+$/.test(l))
     .map(Number);
 }
 
 
 
-export function excludeParent(
-  pids: number[],
-  parentPid: number
-): number[] {
-  return pids.filter(pid => pid !== parentPid);
-}
+export function expandPids(pids: number[]): Set<number> {
+  const all = new Set<number>(pids);
 
-
-export function findPortsByPid(pid: number): number[] {
-  try {
-    const cmd = `
-      Get-NetTCPConnection |
-      Where-Object { $_.OwningProcess -eq ${pid} -and $_.State -eq "Listen" } |
-      Select-Object -ExpandProperty LocalPort
-    `;
-
-    const out = execSync(`powershell -Command "${cmd}"`, {
-      encoding: "utf-8",
-    });
-
-    return out
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => /^\d+$/.test(l))
-      .map(Number);
-  } catch {
-    return [];
+  for (const pid of pids) {
+    const children = getChildPids(pid);
+    for (const c of children) all.add(c);
   }
+
+  return all;
 }
 
 
-import http from "http";
 
 export async function isCDPPort(port: number): Promise<string | null> {
-  return new Promise(resolve => {
-    const req = http.get(
-      `http://127.0.0.1:${port}/json/version`,
-      res => {
-        let data = "";
-        res.on("data", d => (data += d));
-        res.on("end", () => {
-          try {
-            const json = JSON.parse(data);
-            if (json.webSocketDebuggerUrl) {
-              resolve(json.webSocketDebuggerUrl);
-            } else {
-              resolve(null);
-            }
-          } catch {
-            resolve(null);
-          }
-        });
-      }
-    );
-
-    req.on("error", () => resolve(null));
-    req.setTimeout(500, () => {
-      req.destroy();
-      resolve(null);
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/json/version`, {
+      timeout: 500,
     });
-  });
+    if (!r.ok) return null;
+
+    const j = await r.json();
+    return j.webSocketDebuggerUrl ?? null;
+  } catch {
+    return null;
+  }
 }
 
 
-import { chromium } from "playwright-core";
+export async function findOpenFinCDP(
+  openFinPids: number[],
+  timeoutMs = 30_000
+) {
+  const start = Date.now();
+  const found = new Map<number, { pid: number; port: number; ws: string }>();
 
-export async function matchesApp(
-  wsEndpoint: string,
-  appName: string,
-  env: string
-): Promise<boolean> {
-  const browser = await chromium.connectOverCDP(wsEndpoint);
+  const pidSet = expandPids(openFinPids);
 
-  try {
-    for (const context of browser.contexts()) {
-      for (const page of context.pages()) {
-        try {
-          const url = page.url();
-          if (!/^https?:\/\//.test(url)) continue;
+  while (Date.now() - start < timeoutMs) {
+    const allPorts = getAllTcpPorts();
 
-          const title = await page.title();
+    for (const { pid, port } of allPorts) {
+      if (!pidSet.has(pid)) continue;
+      if (found.has(port)) continue;
 
-          if (
-            title.includes(appName) &&
-            url.includes(env)
-          ) {
-            return true;
-          }
-        } catch {
-          // страница могла закрыться — это нормально
-        }
-      }
+      const ws = await isCDPPort(port);
+      if (!ws) continue;
+
+      found.set(port, { pid, port, ws });
     }
 
-    return false;
-  } finally {
-    await browser.close();
+    if (found.size > 0) break;
+    await new Promise((r) => setTimeout(r, 500));
   }
+
+  return [...found.values()];
 }
