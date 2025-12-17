@@ -1,98 +1,53 @@
-export function getAllTcpPorts(): { pid: number; port: number }[] {
-  const out = execSync(`netstat -ano -p tcp`, { encoding: "utf-8" });
+import { execSync } from "child_process";
 
-  const lines = out.split("\n");
-
-  const result: { pid: number; port: number }[] = [];
-
-  for (const line of lines) {
-    const parts = line.trim().split(/\s+/);
-    if (parts.length < 5) continue;
-
-    const local = parts[1]; // 127.0.0.1:9222
-    const pid = Number(parts[4]);
-
-    if (!Number.isInteger(pid)) continue;
-
-    const m = local.match(/:(\d+)$/);
-    if (!m) continue;
-
-    result.push({ pid, port: Number(m[1]) });
-  }
-
-  return result;
-}
-
-
-
-export function getChildPids(parentPid: number): number[] {
-  const out = execSync(
-    `wmic process where (ParentProcessId=${parentPid}) get ProcessId`,
-    { encoding: "utf-8" }
-  );
-
-  return out
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => /^\d+$/.test(l))
-    .map(Number);
-}
-
-
-
-export function expandPids(pids: number[]): Set<number> {
-  const all = new Set<number>(pids);
-
-  for (const pid of pids) {
-    const children = getChildPids(pid);
-    for (const c of children) all.add(c);
-  }
-
-  return all;
-}
-
-
-
-export async function isCDPPort(port: number): Promise<string | null> {
+export function getOpenFinPids(): number[] {
   try {
-    const r = await fetch(`http://127.0.0.1:${port}/json/version`, {
-      timeout: 500,
-    });
-    if (!r.ok) return null;
+    const out = execSync(
+      `tasklist /FI "IMAGENAME eq openfin.exe" /FO CSV /NH`,
+      { encoding: "utf-8" }
+    );
 
-    const j = await r.json();
-    return j.webSocketDebuggerUrl ?? null;
+    return out
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => {
+        const cols = l.split('","').map((c) => c.replace(/"/g, ""));
+        return Number(cols[1]); // PID
+      })
+      .filter((pid) => Number.isInteger(pid));
   } catch {
-    return null;
+    return [];
   }
 }
 
 
-export async function findOpenFinCDP(
-  openFinPids: number[],
-  timeoutMs = 30_000
-) {
-  const start = Date.now();
-  const found = new Map<number, { pid: number; port: number; ws: string }>();
+export function findPortsByPid(pid: number): number[] {
+  try {
+    const out = execSync(`netstat -ano`, { encoding: "utf-8" });
 
-  const pidSet = expandPids(openFinPids);
+    const ports = new Set<number>();
 
-  while (Date.now() - start < timeoutMs) {
-    const allPorts = getAllTcpPorts();
+    for (const line of out.split("\n")) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 5) continue;
 
-    for (const { pid, port } of allPorts) {
-      if (!pidSet.has(pid)) continue;
-      if (found.has(port)) continue;
+      const local = parts[1];       // 127.0.0.1:49685
+      const owningPid = Number(parts[4]);
 
-      const ws = await isCDPPort(port);
-      if (!ws) continue;
+      if (owningPid !== pid) continue;
 
-      found.set(port, { pid, port, ws });
+      const match = local.match(/:(\d+)$/);
+      if (!match) continue;
+
+      ports.add(Number(match[1]));
     }
 
-    if (found.size > 0) break;
-    await new Promise((r) => setTimeout(r, 500));
+    return [...ports];
+  } catch {
+    return [];
   }
-
-  return [...found.values()];
 }
+
+
+

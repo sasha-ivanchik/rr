@@ -1,38 +1,36 @@
 export async function findExternalOpenFin(
   appName: string,
   env: string,
-  timeoutMs = 30_000
-): Promise<ExternalAppInfo> {
+  retries = 3,
+  delayMs = 10_000
+): Promise<FoundOpenFinApp> {
 
-  const openFinPids = getOpenFinPids();
-  const endpoints = await findOpenFinCDP(openFinPids, timeoutMs);
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    console.log(`🔁 Attempt ${attempt}/${retries}`);
 
-  for (const ep of endpoints) {
-    const browser = await chromium.connectOverCDP(ep.ws);
-    const context = browser.contexts()[0] ?? await browser.newContext();
+    const pids = getOpenFinPids();
+    console.log("PIDs:", pids);
 
-    const page =
-      context.pages()[0] ??
-      await context.waitForEvent("page", { timeout: 5_000 });
+    for (const pid of pids) {
+      const ports = findPortsByPid(pid);
+      console.log(`PID ${pid} ports:`, ports);
 
-    const title = await page.title();
-    const url = page.url();
+      for (const port of ports) {
+        const ws = await isCDPPort(port);
+        if (!ws) continue;
 
-    if (
-      title.includes(appName) &&
-      url.includes(env) &&
-      /^https?:\/\//.test(url)
-    ) {
-      return {
-        pid: ep.pid,
-        port: ep.port,
-        wsEndpoint: ep.ws,
-        source: "external",
-      };
+        const ok = await matchesApp(ws, appName, env);
+        if (!ok) continue;
+
+        return { pid, port, wsEndpoint: ws };
+      }
     }
 
-    await browser.close();
+    if (attempt < retries) {
+      console.log(`⏳ wait ${delayMs}ms`);
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
   }
 
-  throw new Error(`External OpenFin app not found`);
+  throw new Error("OpenFin app not found");
 }

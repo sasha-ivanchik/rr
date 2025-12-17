@@ -31,10 +31,7 @@ export async function tryFindChildInParent(
         hay.includes(appName.toLowerCase()) &&
         hay.includes(env.toLowerCase())
       ) {
-        const wsEndpoint = page
-          .context()
-          .browser()
-          ?.wsEndpoint();
+        const wsEndpoint = 
 
         if (!wsEndpoint) continue;
 
