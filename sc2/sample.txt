@@ -1,4 +1,0 @@
-https://www.w3schools.com/html/html_tables.asp
-https://ant.design/components/table/
-https://webix.com/demos/datatable/
-https://js.devexpress.com/Demos/WidgetsGallery/Demo/DataGrid/Overview/React/    -   devix
