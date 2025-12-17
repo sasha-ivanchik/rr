@@ -24,21 +24,25 @@ export function excludeParent(
 
 
 export function findPortsByPid(pid: number): number[] {
-  const output = execSync(
-    `netstat -ano | findstr ${pid}`,
-    { encoding: "utf-8" }
-  );
+  try {
+    const cmd = `
+      Get-NetTCPConnection |
+      Where-Object { $_.OwningProcess -eq ${pid} -and $_.State -eq "Listen" } |
+      Select-Object -ExpandProperty LocalPort
+    `;
 
-  const ports = new Set<number>();
+    const out = execSync(`powershell -Command "${cmd}"`, {
+      encoding: "utf-8",
+    });
 
-  for (const line of output.split("\n")) {
-    const match = line.match(/:(\d+)\s+.*\s+${pid}$/);
-    if (match) {
-      ports.add(Number(match[1]));
-    }
+    return out
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => /^\d+$/.test(l))
+      .map(Number);
+  } catch {
+    return [];
   }
-
-  return [...ports];
 }
 
 
