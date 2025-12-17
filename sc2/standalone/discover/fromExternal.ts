@@ -10,71 +10,69 @@ export async function findExternalOpenFin(
   parentPid: number,
   appName: string,
   env: string,
-  timeoutMs = 30_000
+  timeoutMs = 40_000
 ): Promise<ExternalAppInfo> {
 
-  const start = Date.now();
-  const pollIntervalMs = 1000;
+  const startedAt = Date.now();
+  const pollIntervalMs = 2000;
 
-  while (Date.now() - start < timeoutMs) {
+  while (Date.now() - startedAt < timeoutMs) {
 
+    let pids: number[] = [];
+
+    // 1️⃣ Получаем ВСЕ openfin процессы
     try {
-      const pids = excludeParent(
-        getOpenFinPids(),
-        parentPid
-      );
+      pids = getOpenFinPids();
+    } catch {
+      pids = [];
+    }
 
-      for (const pid of pids) {
-        let ports: number[] = [];
+    // 2️⃣ Убираем parent PID
+    pids = pids.filter(pid => pid !== parentPid);
 
+    for (const pid of pids) {
+
+      let ports: number[] = [];
+
+      // 3️⃣ Ищем LISTENING порты процесса
+      try {
+        ports = findPortsByPid(pid);
+      } catch {
+        continue;
+      }
+
+      if (ports.length === 0) continue;
+
+      for (const port of ports) {
+
+        let wsEndpoint: string | null = null;
+
+        // 4️⃣ Проверяем CDP endpoint
         try {
-          ports = findPortsByPid(pid);
+          wsEndpoint = await isCDPPort(port);
         } catch {
-          // процесс есть, но порты ещё не готовы
           continue;
         }
 
-        for (const port of ports) {
-          let ws: string | null = null;
+        if (!wsEndpoint) continue;
 
-          try {
-            ws = await isCDPPort(port);
-          } catch {
-            // порт есть, но CDP ещё не поднялся
-            continue;
-          }
-
-          if (!ws) continue;
-
-          let ok = false;
-
-          try {
-            ok = await matchesApp(ws, appName, env);
-          } catch {
-            // CDP нестабилен / вкладки ещё не готовы
-            continue;
-          }
-
-          if (!ok) continue;
-
-          // ✅ НАЙДЕНО
-          return {
-            pid,
-            port,
-            wsEndpoint: ws,
-            source: "external",
-          };
-        }
+        // 5️⃣ НАШЛИ runtime с CDP
+        return {
+          pid,
+          port,
+          wsEndpoint,
+          source: "external",
+        };
       }
-    } catch {
-      // глобальная ошибка цикла — не валим процесс
     }
 
-    await new Promise(r => setTimeout(r, pollIntervalMs));
+    // 6️⃣ Пауза между попытками
+    await new Promise(res => setTimeout(res, pollIntervalMs));
   }
 
   throw new Error(
-    `External OpenFin app not found (name=${appName}, env=${env}, timeout=${timeoutMs}ms)`
+    `External OpenFin runtime not found within ${timeoutMs}ms`
   );
 }
+
 
