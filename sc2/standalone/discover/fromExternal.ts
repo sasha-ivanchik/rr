@@ -6,72 +6,75 @@ export interface ExternalAppInfo {
 }
 
 
-
-export async function resolveChild(
-  name: string,
-  env: string,
+export async function findExternalOpenFin(
   parentPid: number,
+  appName: string,
+  env: string,
   timeoutMs = 30_000
-): Promise<{
-  pid: number;
-  port: number;
-  wsEndpoint: string;
-}> {
+): Promise<ExternalAppInfo> {
 
-  const startedAt = Date.now();
+  const start = Date.now();
   const pollIntervalMs = 1000;
 
-  while (Date.now() - startedAt < timeoutMs) {
+  while (Date.now() - start < timeoutMs) {
+
     try {
-      const pids = getOpenFinPids().filter(pid => pid !== parentPid);
+      const pids = excludeParent(
+        getOpenFinPids(),
+        parentPid
+      );
 
       for (const pid of pids) {
-        let ports: number[];
+        let ports: number[] = [];
 
         try {
           ports = findPortsByPid(pid);
         } catch {
-          continue; // pid ещё не готов
+          // процесс есть, но порты ещё не готовы
+          continue;
         }
 
         for (const port of ports) {
-          let wsEndpoint: string | null;
+          let ws: string | null = null;
 
           try {
-            wsEndpoint = await getWsEndpointFromPort(port);
+            ws = await isCDPPort(port);
           } catch {
-            continue; // порт не CDP
+            // порт есть, но CDP ещё не поднялся
+            continue;
           }
 
-          if (!wsEndpoint) continue;
+          if (!ws) continue;
 
-          let isMatch = false;
+          let ok = false;
 
           try {
-            isMatch = await matchesApp(wsEndpoint, name, env);
+            ok = await matchesApp(ws, appName, env);
           } catch {
-            continue; // CDP нестабилен — это НОРМА
+            // CDP нестабилен / вкладки ещё не готовы
+            continue;
           }
 
-          if (!isMatch) continue;
+          if (!ok) continue;
 
           // ✅ НАЙДЕНО
           return {
             pid,
             port,
-            wsEndpoint,
+            wsEndpoint: ws,
+            source: "external",
           };
         }
       }
     } catch {
-      // глобальная ошибка сканирования — подавляем
+      // глобальная ошибка цикла — не валим процесс
     }
 
-    await sleep(pollIntervalMs);
+    await new Promise(r => setTimeout(r, pollIntervalMs));
   }
 
   throw new Error(
-    `resolveChild timeout: name=${name}, env=${env}, timeout=${timeoutMs}ms`
+    `External OpenFin app not found (name=${appName}, env=${env}, timeout=${timeoutMs}ms)`
   );
 }
 
