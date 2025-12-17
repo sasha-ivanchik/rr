@@ -1,78 +1,38 @@
-export interface ExternalAppInfo {
-  pid: number;
-  port: number;
-  wsEndpoint: string;
-  source: "external";
-}
-
-
 export async function findExternalOpenFin(
-  parentPid: number,
   appName: string,
   env: string,
-  timeoutMs = 40_000
+  timeoutMs = 30_000
 ): Promise<ExternalAppInfo> {
 
-  const startedAt = Date.now();
-  const pollIntervalMs = 2000;
+  const openFinPids = getOpenFinPids();
+  const endpoints = await findOpenFinCDP(openFinPids, timeoutMs);
 
-  while (Date.now() - startedAt < timeoutMs) {
+  for (const ep of endpoints) {
+    const browser = await chromium.connectOverCDP(ep.ws);
+    const context = browser.contexts()[0] ?? await browser.newContext();
 
-    let pids: number[] = [];
+    const page =
+      context.pages()[0] ??
+      await context.waitForEvent("page", { timeout: 5_000 });
 
-    // 1️⃣ Получаем ВСЕ openfin процессы
-    try {
-      pids = getOpenFinPids();
-    } catch {
-      pids = [];
+    const title = await page.title();
+    const url = page.url();
+
+    if (
+      title.includes(appName) &&
+      url.includes(env) &&
+      /^https?:\/\//.test(url)
+    ) {
+      return {
+        pid: ep.pid,
+        port: ep.port,
+        wsEndpoint: ep.ws,
+        source: "external",
+      };
     }
 
-    // 2️⃣ Убираем parent PID
-    pids = pids.filter(pid => pid !== parentPid);
-
-    for (const pid of pids) {
-
-      let ports: number[] = [];
-
-      // 3️⃣ Ищем LISTENING порты процесса
-      try {
-        ports = findPortsByPid(pid);
-      } catch {
-        continue;
-      }
-
-      if (ports.length === 0) continue;
-
-      for (const port of ports) {
-
-        let wsEndpoint: string | null = null;
-
-        // 4️⃣ Проверяем CDP endpoint
-        try {
-          wsEndpoint = await isCDPPort(port);
-        } catch {
-          continue;
-        }
-
-        if (!wsEndpoint) continue;
-
-        // 5️⃣ НАШЛИ runtime с CDP
-        return {
-          pid,
-          port,
-          wsEndpoint,
-          source: "external",
-        };
-      }
-    }
-
-    // 6️⃣ Пауза между попытками
-    await new Promise(res => setTimeout(res, pollIntervalMs));
+    await browser.close();
   }
 
-  throw new Error(
-    `External OpenFin runtime not found within ${timeoutMs}ms`
-  );
+  throw new Error(`External OpenFin app not found`);
 }
-
-
