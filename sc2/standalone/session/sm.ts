@@ -2,9 +2,11 @@ import { chromium } from "@playwright/test";
 import { registry } from "../registry/Registry";
 import { AppSession } from "./AppSession";
 import { isSessionAlive } from "./health";
+private tracker?: WindowTracker;
 
 export class SessionManager {
   private session: AppSession | null = null;
+  private tracker?: WindowTracker;
 
   constructor(
     private readonly appName: string,
@@ -48,6 +50,9 @@ export class SessionManager {
     if (!page) {
       throw new Error("No page found in browser context");
     }
+
+    this.tracker = new WindowTracker(context);
+    await this.tracker.captureBase();
 
     return {
       appName: info.appName,
