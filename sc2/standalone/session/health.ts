@@ -1,5 +1,4 @@
 import { chromium } from "playwright-core";
-import WebSocket from "ws";
 import { Registry } from "../registry/Registry";
 
 /* =======================
@@ -20,12 +19,6 @@ export interface HealthResult {
   step: string;
   reason?: string;
 }
-
-/* =======================
- * Config
- * ======================= */
-
-const CDP_TIMEOUT_MS = 3_000;
 
 /* =======================
  * HealthChecker
@@ -63,81 +56,33 @@ export class HealthChecker {
       );
     }
 
-    /* ---- Level 3: CDP transport ---- */
-    const cdpFail = await this.checkCDP(app, cdp.wsEndpoint);
-    if (cdpFail) return cdpFail;
-
-    /* ---- Level 4: Logical ---- */
-    const logicalFail = await this.checkLogical(
-      app,
-      cdp.wsEndpoint,
-      name,
-      env
-    );
-    if (logicalFail) return logicalFail;
-
-    return {
-      app,
-      status: "OK",
-      step: "ok"
-    };
-  }
-
-  /* =======================
-   * Helpers
-   * ======================= */
-
-  private async checkCDP(
-    app: AppKind,
-    wsEndpoint: string
-  ): Promise<HealthResult | null> {
-    return new Promise((resolve) => {
-      const ws = new WebSocket(wsEndpoint, {
-        handshakeTimeout: CDP_TIMEOUT_MS
-      });
-
-      const timer = setTimeout(() => {
-        ws.terminate();
-        resolve(
-          this.fail(app, "UNRESPONSIVE", "cdp", "CDP timeout")
-        );
-      }, CDP_TIMEOUT_MS);
-
-      ws.on("open", () => {
-        clearTimeout(timer);
-        ws.terminate();
-        resolve(null);
-      });
-
-      ws.on("error", (err) => {
-        clearTimeout(timer);
-        resolve(
-          this.fail(app, "UNRESPONSIVE", "cdp", err.message)
-        );
-      });
-    });
-  }
-
-  private async checkLogical(
-    app: AppKind,
-    wsEndpoint: string,
-    name: string,
-    env: string
-  ): Promise<HealthResult | null> {
+    /* ---- Level 3: CDP + Logical (atomic, most reliable) ---- */
     try {
-      const browser = await chromium.connectOverCDP(wsEndpoint);
-      const context = browser.contexts()[0];
-      const page = context?.pages()[0];
+      const browser = await chromium.connectOverCDP(cdp.wsEndpoint);
 
-      if (!page) {
+      const contexts = browser.contexts();
+      if (!contexts.length) {
         await browser.close();
         return this.fail(
           app,
           "UNRESPONSIVE",
-          "logical",
-          "No active page"
+          "cdp",
+          "No browser contexts"
         );
       }
+
+      const pages = contexts[0].pages();
+      if (!pages.length) {
+        await browser.close();
+        return this.fail(
+          app,
+          "UNRESPONSIVE",
+          "cdp",
+          "No active pages"
+        );
+      }
+
+      const page = pages[0];
 
       const url = page.url();
       const title = await page.title();
@@ -162,16 +107,25 @@ export class HealthChecker {
         );
       }
 
-      return null;
+      return {
+        app,
+        status: "OK",
+        step: "ok"
+      };
+
     } catch (err: any) {
       return this.fail(
         app,
         "UNRESPONSIVE",
-        "logical",
-        err.message
+        "cdp",
+        err?.message ?? "CDP connection failed"
       );
     }
   }
+
+  /* =======================
+   * Helper
+   * ======================= */
 
   private fail(
     app: AppKind,
