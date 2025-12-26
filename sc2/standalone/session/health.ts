@@ -25,7 +25,6 @@ export interface HealthResult {
  * Config
  * ======================= */
 
-const REGISTRY_TTL_MS = 2 * 60 * 1000;
 const CDP_TIMEOUT_MS = 3_000;
 
 /* =======================
@@ -35,38 +34,44 @@ const CDP_TIMEOUT_MS = 3_000;
 export class HealthChecker {
   async checkApp(app: AppKind): Promise<HealthResult> {
     /* ---- Level 1: Registry ---- */
-    const registry = Registry.get(app);
+    const info = Registry.get(app);
 
-    if (!registry) {
+    if (!info) {
       return this.fail(app, "MISSING", "registry", "No registry entry");
     }
 
-    const { pid, port, wsEndpoint, timestamp, appName, env } = registry;
+    const { pid, cdp, name, env } = info;
 
-    if (!pid || !port || !wsEndpoint) {
-      return this.fail(app, "DEAD", "registry", "Incomplete registry data");
-    }
-
-    if (Date.now() - timestamp > REGISTRY_TTL_MS) {
-      return this.fail(app, "UNRESPONSIVE", "registry", "Registry entry expired");
+    if (!pid || !cdp?.wsEndpoint) {
+      return this.fail(
+        app,
+        "DEAD",
+        "registry",
+        "Incomplete registry data"
+      );
     }
 
     /* ---- Level 2: Process ---- */
     try {
       process.kill(pid, 0);
     } catch {
-      return this.fail(app, "DEAD", "process", `PID ${pid} not alive`);
+      return this.fail(
+        app,
+        "DEAD",
+        "process",
+        `PID ${pid} not alive`
+      );
     }
 
     /* ---- Level 3: CDP transport ---- */
-    const cdpFail = await this.checkCDP(app, wsEndpoint);
+    const cdpFail = await this.checkCDP(app, cdp.wsEndpoint);
     if (cdpFail) return cdpFail;
 
     /* ---- Level 4: Logical ---- */
     const logicalFail = await this.checkLogical(
       app,
-      wsEndpoint,
-      appName,
+      cdp.wsEndpoint,
+      name,
       env
     );
     if (logicalFail) return logicalFail;
@@ -116,7 +121,7 @@ export class HealthChecker {
   private async checkLogical(
     app: AppKind,
     wsEndpoint: string,
-    appName: string,
+    name: string,
     env: string
   ): Promise<HealthResult | null> {
     try {
@@ -126,7 +131,12 @@ export class HealthChecker {
 
       if (!page) {
         await browser.close();
-        return this.fail(app, "UNRESPONSIVE", "logical", "No active page");
+        return this.fail(
+          app,
+          "UNRESPONSIVE",
+          "logical",
+          "No active page"
+        );
       }
 
       const url = page.url();
@@ -143,7 +153,7 @@ export class HealthChecker {
         );
       }
 
-      if (!title.includes(appName) || !title.includes(env)) {
+      if (!title.includes(name) || !title.includes(env)) {
         return this.fail(
           app,
           "UNRESPONSIVE",
