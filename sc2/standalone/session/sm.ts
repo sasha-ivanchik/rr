@@ -2,16 +2,28 @@ import { chromium } from "@playwright/test";
 import { registry } from "../registry/Registry";
 import { AppSession } from "./AppSession";
 import { isSessionAlive } from "./health";
-private tracker?: WindowTracker;
+import { ChildHealthChecker } from "../health/ChildHealthChecker";
+
 
 export class SessionManager {
   private session: AppSession | null = null;
   private tracker?: WindowTracker;
+  private health = new ChildHealthChecker();
 
   constructor(
     private readonly appName: string,
     private readonly env: string
   ) {}
+
+
+  async ensureChildHealthy(): Promise<void> {
+    const result = await this.health.check();
+
+    if (result.status !== "OK") {
+      console.error("CHILD UNHEALTHY:", result.reason);
+      process.exit(42); // важно для wrapper
+    }
+  }
 
   async get(): Promise<AppSession> {
     if (
