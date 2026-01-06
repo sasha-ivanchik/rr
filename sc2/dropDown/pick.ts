@@ -11,7 +11,6 @@ export async function pickValues(
   const value = values[0];
   if (!value) return false;
 
-  // HTML select
   if (det.kind === "html-select" && det.nativeSelect) {
     try {
       await det.nativeSelect.selectOption({ label: value });
@@ -21,23 +20,18 @@ export async function pickValues(
     }
   }
 
-  await openDropdown(page, det);
+  await det.trigger.click();
+  await page.waitForTimeout(50);
 
-  const popup = await getActivePopup(page);
+  const popup = page.locator(".MuiPopover-root").last();
+  await popup.waitFor({ state: "visible", timeout: 3000 });
 
-  // 1. try visible options first (no scroll)
-  let option = await findVisibleOption(popup, value, opts.caseSensitive);
-  if (!option && det.kind === "mui-autocomplete" && det.input) {
-    // 2. type into input to filter
-    await det.input.fill("");
-    await det.input.type(value, { delay: 50 });
-    await page.waitForTimeout(150);
+  let option = popup
+    .locator('[role="option"], [role="menuitem"]')
+    .filter({ hasText: buildExact(value, opts.caseSensitive) })
+    .first();
 
-    option = await findVisibleOption(popup, value, opts.caseSensitive);
-  }
-
-  // 3. fallback to virtualized scroll
-  if (!option) {
+  if (!(await option.count())) {
     option = await findOptionWithVirtualScroll(
       page,
       popup,
@@ -47,49 +41,16 @@ export async function pickValues(
   }
 
   if (!option) {
-    await safeClose(page);
+    await page.keyboard.press("Escape");
     return false;
   }
 
   await option.click();
-  await safeClose(page);
+  await page.keyboard.press("Escape");
   return true;
 }
 
-async function findVisibleOption(
-  popup: any,
-  value: string,
-  caseSensitive: boolean
-) {
-  const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const rx = new RegExp(`^\\s*${escaped}\\s*$`, caseSensitive ? "" : "i");
-
-  const option = popup
-    .locator("[role='option'],[role='menuitem'],li")
-    .filter({ hasText: rx });
-
-  if (await option.count()) return option.first();
-  return null;
-}
-
-async function openDropdown(page: Page, det: DropdownDetection) {
-  try {
-    await det.root.hover();
-  } catch {}
-
-  await det.trigger.click();
-  await page.waitForTimeout(50);
-}
-
-async function getActivePopup(page: Page) {
-  const popup = page.locator(".MuiPopover-root").last();
-  await popup.waitFor({ state: "visible", timeout: 3000 });
-  return popup;
-}
-
-async function safeClose(page: Page) {
-  try {
-    await page.keyboard.press("Escape");
-  } catch {}
-  await page.waitForTimeout(50);
+function buildExact(text: string, cs: boolean) {
+  const e = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^\\s*${e}\\s*$`, cs ? "" : "i");
 }
