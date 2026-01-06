@@ -19,13 +19,51 @@ export class DropdownClearer {
   }
 
   private static async clearMuiAutocomplete(root: Locator) {
+    // hover может быть необходим, чтобы кнопки стали видимы
+    try {
+      await root.hover({ force: true });
+    } catch {
+      // ignore hover issues
+    }
+
+    // 1️⃣ Пытаемся найти Clear-кнопку
     const clearButtons = root.locator(
       'button[aria-label="Clear"], button[title="Clear"]'
     );
 
-    const count = await clearButtons.count();
-    for (let i = 0; i < count; i++) {
-      await clearButtons.nth(i).click();
+    if (await clearButtons.count()) {
+      for (let i = 0; i < await clearButtons.count(); i++) {
+        const btn = clearButtons.nth(i);
+        if (await btn.isVisible()) {
+          await btn.click({ force: true });
+          return;
+        }
+      }
+    }
+
+    // 2️⃣ Если нет Clear — удаляем chips
+    const chipDeleteIcons = root.locator(
+      '[class*="MuiChip-deleteIcon"]'
+    );
+
+    const chipCount = await chipDeleteIcons.count();
+
+    if (!chipCount) {
+      // очищать нечего
+      return;
+    }
+
+    for (let i = 0; i < chipCount; i++) {
+      const icon = chipDeleteIcons.nth(i);
+
+      try {
+        if (!(await icon.isVisible())) {
+          await icon.hover({ force: true });
+        }
+        await icon.click({ force: true });
+      } catch {
+        // если один чип не удалился — продолжаем
+      }
     }
   }
 }
