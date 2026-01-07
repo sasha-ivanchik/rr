@@ -211,3 +211,49 @@ async function safeClose(page: Page) {
   } catch {}
   await page.waitForTimeout(50);
 }
+
+
+// ===============================================================================
+import { Page, Locator, expect } from "@playwright/test";
+
+/**
+ * MUI Select / Menu / Popover
+ */
+export async function getActivePopupForSelect(page: Page): Promise<Locator> {
+  // MUI Select всегда рендерится как menu/listbox
+  const popup = page
+    .locator('[role="listbox"], [role="menu"]')
+    .filter({ hasNot: page.locator('[aria-hidden="true"]') })
+    .last();
+
+  await expect(popup).toBeVisible({ timeout: 3000 });
+  return popup;
+}
+
+/**
+ * MUI Autocomplete (Popper)
+ */
+export async function getActivePopupForAutocomplete(page: Page): Promise<Locator> {
+  // Autocomplete options всегда role="listbox"
+  const popup = page
+    .locator('[role="listbox"]')
+    .filter({ hasNot: page.locator('[aria-hidden="true"]') })
+    .last();
+
+  await expect(popup).toBeVisible({ timeout: 3000 });
+  return popup;
+}
+
+/**
+ * Dispatcher — единая точка входа
+ */
+export async function getActivePopup(
+  page: Page,
+  kind: "mui-select" | "mui-autocomplete"
+): Promise<Locator> {
+  if (kind === "mui-autocomplete") {
+    return getActivePopupForAutocomplete(page);
+  }
+
+  return getActivePopupForSelect(page);
+}
