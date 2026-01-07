@@ -1,59 +1,69 @@
-import { Page, Locator, expect } from "@playwright/test";
+import { Page, Locator } from "@playwright/test";
 
 /**
- * Устанавливает дату в MUI Calendar / DatePicker
+ * Sets date in MUI DatePicker / Calendar input
  * @param page Playwright Page
- * @param isoDate YYYY-MM-DD (Единственный допустимый формат входа)
- * @param label Label поля
+ * @param isoDate Date in ISO format (YYYY-MM-DD)
+ * @param label Input label
+ * @returns true if date was set successfully, false otherwise
  */
 export async function setCalendar(
   page: Page,
   isoDate: string,
   label: string
+): Promise<boolean> {
+  if (!isValidIsoDate(isoDate)) {
+    return false;
+  }
+
+  let input: Locator;
+
+  try {
+    input = page.getByLabel(label, { exact: true });
+    await input.waitFor({ state: "visible", timeout: 5000 });
+  } catch {
+    return false;
+  }
+
+  try {
+    await makeEditable(page, input);
+    await clearInput(input);
+
+    const detectedFormat = await detectInputDateFormat(page, input);
+    const valueToType = detectedFormat
+      ? convertIsoToFormat(isoDate, detectedFormat)
+      : isoDate;
+
+    await input.fill(valueToType);
+    await input.blur();
+
+    await closeCalendarIfOpened(page);
+
+    const finalValue = await input.inputValue();
+    return isSameDate(finalValue, isoDate);
+  } catch {
+    return false;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* ----------------------------- HELPERS ------------------------------ */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Validates ISO date format (YYYY-MM-DD)
+ */
+function isValidIsoDate(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+/**
+ * Removes readonly / disabled attributes from input if present
+ */
+async function makeEditable(
+  page: Page,
+  input: Locator
 ): Promise<void> {
-  validateIsoDate(isoDate);
-
-  const input = page.getByLabel(label, { exact: true });
-  await input.waitFor({ state: "visible", timeout: 5000 });
-
-  await makeEditable(page, input);
-  await clearInput(input);
-
-  const detectedFormat = await detectInputDateFormat(page, input);
-  const dateToType = detectedFormat
-    ? convertIsoToFormat(isoDate, detectedFormat)
-    : isoDate;
-
-  await input.fill(dateToType);
-  await input.blur();
-
-  await closeCalendarIfOpened(page);
-
-  // Финальная проверка: либо exact, либо MUI сам отформатировал
-  const finalValue = await input.inputValue();
-  if (!finalValue || finalValue.length === 0) {
-    throw new Error(
-      `Failed to set date for label "${label}". Input value is empty.`
-    );
-  }
-
-  // Логически проверяем, что дата установилась
-  assertSameDate(finalValue, isoDate);
-}
-
-/* ------------------------------------------------------------------ */
-/* --------------------------- HELPERS -------------------------------- */
-/* ------------------------------------------------------------------ */
-
-function validateIsoDate(value: string): void {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    throw new Error(
-      `Invalid date format "${value}". Expected YYYY-MM-DD`
-    );
-  }
-}
-
-async function makeEditable(page: Page, input: Locator): Promise<void> {
   const handle = await input.elementHandle();
   if (!handle) return;
 
@@ -63,6 +73,9 @@ async function makeEditable(page: Page, input: Locator): Promise<void> {
   }, handle);
 }
 
+/**
+ * Clears input value using keyboard shortcuts
+ */
 async function clearInput(input: Locator): Promise<void> {
   await input.click();
   await input.press("Meta+A").catch(() => {});
@@ -71,20 +84,20 @@ async function clearInput(input: Locator): Promise<void> {
 }
 
 /**
- * Пытаемся определить формат, который ЖДЁТ input
- * Если не удалось — возвращаем null
+ * Tries to detect date format expected by input
+ * Returns format string or null if detection failed
  */
 async function detectInputDateFormat(
   page: Page,
   input: Locator
 ): Promise<string | null> {
-  // 1️⃣ placeholder (если вдруг есть)
+  // 1. Placeholder is the most reliable source
   const placeholder = await input.getAttribute("placeholder");
   if (placeholder && looksLikeDateFormat(placeholder)) {
     return normalizeFormat(placeholder);
   }
 
-  // 2️⃣ aria-label (если вдруг есть)
+  // 2. aria-label may contain format info
   const aria = await input.getAttribute("aria-label");
   if (aria) {
     const match = aria.match(
@@ -95,7 +108,7 @@ async function detectInputDateFormat(
     }
   }
 
-  // 3️⃣ Echo-test (последний шанс)
+  // 3. Echo test: let MUI reformat a known ISO value
   try {
     await input.fill("2026-01-05");
     await input.blur();
@@ -107,10 +120,16 @@ async function detectInputDateFormat(
   }
 }
 
+/**
+ * Checks if string looks like a date format pattern
+ */
 function looksLikeDateFormat(value: string): boolean {
   return /(Y|M|D){2,4}/.test(value);
 }
 
+/**
+ * Normalizes format string to YYYY / MM / DD tokens
+ */
 function normalizeFormat(format: string): string {
   return format
     .replace(/y/g, "Y")
@@ -119,6 +138,10 @@ function normalizeFormat(format: string): string {
     .trim();
 }
 
+/**
+ * Infers numeric date format from echoed value
+ * Human-readable values are ignored
+ */
 function inferFormatFromEcho(value: string): string | null {
   if (!value) return null;
 
@@ -127,12 +150,15 @@ function inferFormatFromEcho(value: string): string | null {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return "YYYY-MM-DD";
   if (/^\d{2}-\d{2}-\d{4}$/.test(value)) return "DD-MM-YYYY";
 
-  // human-readable — НЕ используем как формат
+  // Ignore human-readable formats like "January 5th"
   if (/[A-Za-z]/.test(value)) return null;
 
   return null;
 }
 
+/**
+ * Converts ISO date to target format
+ */
 function convertIsoToFormat(
   iso: string,
   format: string
@@ -146,32 +172,30 @@ function convertIsoToFormat(
 }
 
 /**
- * Проверяет, что display-value соответствует переданной ISO дате
- * (даже если формат другой)
+ * Verifies that input value represents the same date as ISO input
  */
-function assertSameDate(
+function isSameDate(
   inputValue: string,
   isoDate: string
-): void {
+): boolean {
+  if (!inputValue) return false;
+
   const [y, m, d] = isoDate.split("-");
 
-  if (
+  // Loose but stable check across formats
+  return (
     inputValue.includes(y) &&
     inputValue.includes(String(Number(m))) &&
     inputValue.includes(String(Number(d)))
-  ) {
-    return;
-  }
-
-  // fallback — числовая проверка
-  if (/\d{4}/.test(inputValue)) return;
-
-  throw new Error(
-    `Date mismatch. Expected ISO "${isoDate}", got "${inputValue}"`
   );
 }
 
-async function closeCalendarIfOpened(page: Page): Promise<void> {
+/**
+ * Closes MUI calendar popup if it was opened
+ */
+async function closeCalendarIfOpened(
+  page: Page
+): Promise<void> {
   const popup = page.locator(
     ".MuiPickersPopper-root, .MuiPopover-root"
   );
