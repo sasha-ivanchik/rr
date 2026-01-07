@@ -208,3 +208,55 @@ async function closeCalendarIfOpened(
     await page.keyboard.press("Escape");
   }
 }
+
+
+import { Page, Locator } from "@playwright/test";
+
+/**
+ * Finds input element by label text using DOM proximity strategy.
+ * Starts from label text node and walks up the DOM tree,
+ * searching for input elements in children and siblings.
+ */
+export async function findInputByLabelProximity(
+  page: Page,
+  labelText: string,
+  maxDepth: number = 6
+): Promise<Locator> {
+  // Find element containing the label text
+  const label = page.locator(`text="${labelText}"`).first();
+  await label.waitFor({ state: "visible", timeout: 5000 });
+
+  let current: Locator = label;
+
+  for (let depth = 0; depth < maxDepth; depth++) {
+    // 1. Check descendants
+    const descendantInput = current.locator("input");
+    if (await descendantInput.count()) {
+      return descendantInput.first();
+    }
+
+    // 2. Check following siblings
+    const siblingInput = current.locator(
+      "xpath=following-sibling::input | xpath=following-sibling::*//input"
+    );
+    if (await siblingInput.count()) {
+      return siblingInput.first();
+    }
+
+    // 3. Check preceding siblings (less common but possible)
+    const prevSiblingInput = current.locator(
+      "xpath=preceding-sibling::input | xpath=preceding-sibling::*//input"
+    );
+    if (await prevSiblingInput.count()) {
+      return prevSiblingInput.first();
+    }
+
+    // 4. Move one level up
+    const parent = current.locator("xpath=..");
+    if (!(await parent.count())) break;
+
+    current = parent;
+  }
+
+  throw new Error(`Input not found near label "${labelText}"`);
+}
