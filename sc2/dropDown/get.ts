@@ -136,3 +136,21 @@ export class MuiAutocompleteOptionsReader {
     throw new Error("Failed to collect MUI Autocomplete options");
   }
 }
+
+
+
+
+//==================================================
+
+export class HtmlSelectOptionsReader {
+  static async read(select: Locator): Promise<string[]> {
+    const options = select.locator("option");
+    const count = await options.count();
+
+    const values: string[] = [];
+    for (let i = 0; i < count; i++) {
+      values.push((await options.nth(i).innerText()).trim());
+    }
+    return values;
+  }
+}
