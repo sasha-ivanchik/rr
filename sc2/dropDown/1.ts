@@ -4,68 +4,99 @@ import { PopupDropdownKind } from "./types";
 /**
  * Safely closes ONLY the dropdown popup,
  * without closing parent Dialog / Modal.
+ *
+ * If popup is already closed or invisible — NOOP.
  */
 export async function closeDropdownSafely(
   page: Page,
   popup: Locator,
   kind: PopupDropdownKind
 ): Promise<void> {
-  // 1️⃣ Try click outside popup but inside dialog / root
-  const contextRoot = await resolveContextRoot(page, popup);
+  // 🛑 GUARD 1: popup detached or not found
+  if (!(await popupExists(popup))) {
+    return;
+  }
+
+  // 🛑 GUARD 2: popup already hidden
+  if (!(await popupIsVisible(popup))) {
+    return;
+  }
+
+  // 1️⃣ Try click outside popup but inside context root
+  const contextRoot = await resolveContextRoot(page);
 
   if (contextRoot) {
     try {
       const box = await contextRoot.boundingBox();
       if (box) {
-        // click a safe spot (top-left corner inside context)
         await page.mouse.click(box.x + 5, box.y + 5);
         await popup.waitFor({ state: "hidden", timeout: 1000 });
         return;
       }
     } catch {
-      /* try next strategy */
+      // continue to next strategy
     }
   }
 
-  // 2️⃣ Blur active element (safe for Autocomplete)
+  // 2️⃣ Blur active element (works well for Autocomplete)
   try {
     await page.evaluate(() => {
       const el = document.activeElement as HTMLElement | null;
       el?.blur();
     });
-    await popup.waitFor({ state: "hidden", timeout: 1000 });
+
+    // popup may already be gone — don't force wait
+    if (await popupExists(popup)) {
+      await popup.waitFor({ state: "hidden", timeout: 1000 });
+    }
     return;
   } catch {
-    /* try next */
+    // continue
   }
 
-  // 3️⃣ ESC — LAST RESORT
+  // 3️⃣ ESC — LAST RESORT (may close Dialog, so guarded)
   try {
     await page.keyboard.press("Escape");
-    await popup.waitFor({ state: "hidden", timeout: 1000 });
+
+    if (await popupExists(popup)) {
+      await popup.waitFor({ state: "hidden", timeout: 1000 });
+    }
   } catch {
     // give up silently
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* ----------------------------- HELPERS ------------------------------ */
+/* ------------------------------------------------------------------ */
+
+async function popupExists(popup: Locator): Promise<boolean> {
+  try {
+    return (await popup.count()) > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function popupIsVisible(popup: Locator): Promise<boolean> {
+  try {
+    return await popup.isVisible();
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Finds nearest dialog / modal / drawer,
- * otherwise falls back to body.
+ * Finds a safe context root where we can click
+ * without closing parent dialog.
  */
-async function resolveContextRoot(
-  page: Page,
-  popup: Locator
-): Promise<Locator | null> {
-  // Prefer MUI Dialog
-  const dialog = page.locator(
-    '[role="dialog"]:visible'
-  ).last();
+async function resolveContextRoot(page: Page): Promise<Locator | null> {
+  // Prefer visible Dialog
+  const dialog = page.locator('[role="dialog"]:visible').last();
   if (await dialog.count()) return dialog;
 
-  // MUI Drawer
-  const drawer = page.locator(
-    '[role="presentation"]:visible'
-  ).last();
+  // MUI Drawer / Modal
+  const drawer = page.locator('[role="presentation"]:visible').last();
   if (await drawer.count()) return drawer;
 
   // fallback: body
