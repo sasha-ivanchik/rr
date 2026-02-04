@@ -9,10 +9,9 @@ $proc = Start-Process `
   ) `
   -WorkingDirectory "${process.cwd()}" `
   -WindowStyle Normal `
-  -PassThru;
+  -PassThru;`
 
-Write-Output $proc.Id
-`;
+Write-Output $proc.Id`;
 
 const args = [
   '-NoProfile',

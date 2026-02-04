@@ -53,7 +53,6 @@ SCOPE
 ❌ Forbidden:
 - Framework internals
 - Page Objects implementation
-- Helpers
 - Config / CI / tooling
 - Test data generators
 
@@ -95,6 +94,7 @@ Rules:
 3. Each step MUST describe a real user or system action
 4. Steps MUST be sequential and complete
 5. Docstring MUST allow a human to reproduce the scenario manually
+6. Steps MUST conform to the code. The code MUST conform to the steps
 
 ❌ Forbidden:
 - High-level summaries without steps
@@ -139,6 +139,7 @@ Rules:
 Validation:
 - Comment claims behavior X but code does Y → ISSUE
 - Logic exists with no explanation → ISSUE
+- The name of each test group must contain TC<number>. The name of each test within the group must contain TC<number> S<number> -> INFO
 
 ==================================================
 EXPECT / ASSERTION POLICY (CRITICAL)
@@ -277,7 +278,6 @@ Focus ONLY on:
 - Timing
 - Async behavior
 - UI assumptions
-- React / MUI risks
 
 ==================================================
 OUTPUT FORMAT (MANDATORY)
